@@ -1,0 +1,16 @@
+# Large data files — use threatfox_sample.jsonl for the committed sample
+json_data/unified_data.json
+json_data/unified_data.jsonl
+
+# Credentials — never commit
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# OS
+.DS_Store
