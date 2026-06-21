@@ -1,6 +1,6 @@
 """
-Generator: builds a grounded prompt from retrieved chunks and calls Groq
-(Llama 3.1 8B) to produce a cited answer.
+Generator: builds a grounded prompt from retrieved chunks and calls a local
+Ollama model to produce a cited answer.
 
 The prompt strictly instructs the model to:
   - Answer only from the provided context
@@ -11,14 +11,15 @@ The prompt strictly instructs the model to:
 import os
 from dataclasses import dataclass
 
+import requests
 from dotenv import load_dotenv, find_dotenv
-from groq import Groq
 
 from rag.retriever import RetrievedChunk, retrieve
 
 load_dotenv(find_dotenv(usecwd=True))
 
-LLM_MODEL   = "llama-3.1-8b-instant"
+LLM_MODEL   = os.environ.get("OLLAMA_MODEL", "qwen:7b")
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
 MAX_TOKENS  = 1024
 TEMPERATURE = 0.2          # low temp = more factual, less creative
 
@@ -90,19 +91,22 @@ def generate(
             model=LLM_MODEL,
         )
 
-    client = Groq(api_key=os.environ["GROQ_API_KEY"])
-
-    response = client.chat.completions.create(
-        model=LLM_MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user",   "content": _build_user_prompt(query, chunks)},
-        ],
-        max_tokens=MAX_TOKENS,
-        temperature=TEMPERATURE,
+    prompt = f"{SYSTEM_PROMPT}\n\n{_build_user_prompt(query, chunks)}"
+    response = requests.post(
+        f"{OLLAMA_BASE_URL}/api/generate",
+        json={
+            "model": LLM_MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "num_predict": MAX_TOKENS,
+                "temperature": TEMPERATURE,
+            },
+        },
+        timeout=120,
     )
-
-    answer = response.choices[0].message.content.strip()
+    response.raise_for_status()
+    answer = response.json().get("response", "").strip()
 
     sources = [
         {

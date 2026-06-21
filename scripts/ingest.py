@@ -1,5 +1,5 @@
 """
-Ingest: reads chunk files, generates embeddings, upserts into Qdrant Cloud.
+Ingest: reads chunk files, generates embeddings, upserts into a local Qdrant instance.
 
 Usage:
     python scripts/ingest.py              # ingest all chunk files
@@ -7,13 +7,13 @@ Usage:
     python scripts/ingest.py --no-test    # skip smoke test after ingestion
 
 Setup:
-    Set these two environment variables before running (or edit the .env file):
-        QDRANT_URL     = https://xxxx.us-east.aws.cloud.qdrant.io
-        QDRANT_API_KEY = your-api-key-here
+    Set these environment variables before running (or edit the .env file):
+        QDRANT_URL     = http://localhost:6333
+        QDRANT_API_KEY = optional for local Qdrant
 
 Design:
-    - Single Qdrant Cloud collection: "cti_intel"
-    - Embedding model: all-MiniLM-L6-v2 (384 dims, fast, good quality)
+    - Single local Qdrant collection: "cti_intel"
+    - Embedding model: BAAI/bge-small-en-v1.5 (384 dims)
     - Distance metric: Cosine
     - Point IDs: deterministic integers derived from chunk_id (MD5 hash)
       so re-running is idempotent — same chunk always gets the same ID.
@@ -48,7 +48,7 @@ VECTOR_DIM      = 384
 BATCH_SIZE      = 64
 
 # Read from environment — set in .env or export before running
-QDRANT_URL      = os.environ.get("QDRANT_URL", "")
+QDRANT_URL      = os.environ.get("QDRANT_URL", "http://localhost:6333")
 QDRANT_API_KEY  = os.environ.get("QDRANT_API_KEY", "")
 
 BASE_DIR        = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -86,22 +86,21 @@ def batch(lst, size):
 # ---------------------------------------------------------------------------
 
 def connect_qdrant():
-    if not QDRANT_URL or not QDRANT_API_KEY:
-        print("\nERROR: Missing Qdrant Cloud credentials.")
-        print("Create a free cluster at cloud.qdrant.io, then set:")
-        print("  export QDRANT_URL='https://xxxx.us-east.aws.cloud.qdrant.io'")
-        print("  export QDRANT_API_KEY='your-api-key'")
-        print("Or add them to a .env file in the project root.")
-        sys.exit(1)
-
     try:
-        client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, timeout=20)
+        client_kwargs = {
+            "url": QDRANT_URL,
+            "timeout": 20,
+        }
+        if QDRANT_API_KEY:
+            client_kwargs["api_key"] = QDRANT_API_KEY
+
+        client = QdrantClient(**client_kwargs)
         client.get_collections()
-        print(f"Connected to Qdrant Cloud: {QDRANT_URL}")
+        print(f"Connected to Qdrant: {QDRANT_URL}")
         return client
     except Exception as e:
-        print(f"\nERROR: Could not connect to Qdrant Cloud — {e}")
-        print("Check that your QDRANT_URL and QDRANT_API_KEY are correct.")
+        print(f"\nERROR: Could not connect to Qdrant at {QDRANT_URL} — {e}")
+        print("Check that Qdrant is running (for example via docker compose up -d) and that QDRANT_URL is correct.")
         sys.exit(1)
 
 

@@ -36,11 +36,14 @@ def _get_model() -> SentenceTransformer:
 def _get_client() -> QdrantClient:
     global _client
     if _client is None:
-        _client = QdrantClient(
-            url=os.environ["QDRANT_URL"],
-            api_key=os.environ["QDRANT_API_KEY"],
-            timeout=20,
-        )
+        client_kwargs = {
+            "url": os.environ.get("QDRANT_URL", "http://localhost:6333"),
+            "timeout": 20,
+        }
+        api_key = os.environ.get("QDRANT_API_KEY", "").strip()
+        if api_key:
+            client_kwargs["api_key"] = api_key
+        _client = QdrantClient(**client_kwargs)
     return _client
 
 
