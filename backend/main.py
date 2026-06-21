@@ -18,7 +18,11 @@ from dotenv import load_dotenv, find_dotenv
 load_dotenv(find_dotenv(usecwd=True))
 
 from fastapi import FastAPI
+from fastapi import Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+import requests
+from qdrant_client.http.exceptions import ResponseHandlingException
 
 from backend.routers import mitre, cert, threats, chat
 
@@ -40,6 +44,32 @@ app.include_router(mitre.router)
 app.include_router(cert.router)
 app.include_router(threats.router)
 app.include_router(chat.router)
+
+
+@app.exception_handler(ResponseHandlingException)
+def qdrant_unavailable_handler(_: Request, exc: ResponseHandlingException):
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": (
+                "Qdrant is unavailable. Start the vector database or set QDRANT_URL "
+                "to a running instance."
+            )
+        },
+    )
+
+
+@app.exception_handler(requests.RequestException)
+def ollama_unavailable_handler(_: Request, exc: requests.RequestException):
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": (
+                "The answer generation service is unavailable. Start Ollama or set "
+                "OLLAMA_BASE_URL to a running instance."
+            )
+        },
+    )
 
 
 @app.get("/")
