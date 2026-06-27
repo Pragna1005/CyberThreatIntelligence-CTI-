@@ -48,6 +48,8 @@ function AssistantBubble({ answer, sources, model, loading }) {
     );
   }
 
+  const urls = sources?.filter((s) => s.url) ?? [];
+
   return (
     <div className="flex justify-start">
       <div className="max-w-[80%] space-y-2">
@@ -55,6 +57,19 @@ function AssistantBubble({ answer, sources, model, loading }) {
           <div className="prose prose-invert prose-sm max-w-none text-gray-200">
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{answer}</ReactMarkdown>
           </div>
+
+          {urls.length > 0 && (
+            <div className="mt-3 pt-3 border-t border-gray-700 space-y-1">
+              <p className="text-xs font-semibold text-gray-400">Referenced URLs</p>
+              {urls.map((s) => (
+                <a key={s.chunk_id} href={s.url} target="_blank" rel="noopener noreferrer"
+                  className="block text-xs text-blue-400 hover:text-blue-300 hover:underline break-all">
+                  {s.url}
+                </a>
+              ))}
+            </div>
+          )}
+
           {model && <p className="text-xs text-gray-500 mt-2">{model}</p>}
         </div>
 

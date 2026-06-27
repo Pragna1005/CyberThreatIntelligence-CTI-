@@ -34,8 +34,8 @@ Rules:
 3. If the context does not contain enough information to answer, say:
    "I don't have enough information in the current knowledge base to answer this."
 4. Give thorough, detailed answers. Explain context, impact, and relevant details. Use bullet points, headers, and numbered lists where appropriate.
-5. When a URL is provided in the context for a source, include it in your answer as a reference link.
-6. Always end with a "Sources:" section listing the chunk IDs and any associated URLs."""
+5. When a URL is present in the context (marked as URL: ...), you MUST copy and print the full URL directly in your answer. Never say "see Source [X]" or "provided in Source [X]" — always print the actual URL text.
+6. Always end with a "Sources:" section listing each chunk ID and its full URL (if available)."""
 
 
 def _extract_url(chunk: RetrievedChunk) -> str:
