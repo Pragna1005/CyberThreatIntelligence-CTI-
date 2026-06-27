@@ -2,6 +2,8 @@ import { useState } from "react";
 import { api } from "../api";
 import SearchBar from "../components/SearchBar";
 import ResultCard from "../components/ResultCard";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 export default function ChatPage() {
   const [loading, setLoading]   = useState(false);
@@ -58,9 +60,11 @@ export default function ChatPage() {
               <span className="text-purple-400 font-semibold text-sm">Answer</span>
               <span className="text-xs text-gray-500">· {result.model}</span>
             </div>
-            <p className="text-gray-200 text-sm leading-relaxed whitespace-pre-wrap">
-              {result.answer}
-            </p>
+            <div className="text-gray-200 text-sm leading-relaxed prose prose-invert prose-sm max-w-none">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {result.answer}
+              </ReactMarkdown>
+            </div>
           </div>
 
           <div>
