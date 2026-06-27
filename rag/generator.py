@@ -20,7 +20,7 @@ load_dotenv(find_dotenv(usecwd=True))
 
 LLM_MODEL   = os.environ.get("OLLAMA_MODEL", "qwen:7b")
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
-MAX_TOKENS  = 1024
+MAX_TOKENS  = 4096
 TEMPERATURE = 0.2          # low temp = more factual, less creative
 
 SYSTEM_PROMPT = """You are a Cyber Defence Threat Intelligence assistant.
@@ -33,7 +33,7 @@ Rules:
 (e.g. T1566, CVE-2026-XXXX, IOC value).
 3. If the context does not contain enough information to answer, say:
    "I don't have enough information in the current knowledge base to answer this."
-4. Keep answers concise and structured. Use bullet points where appropriate.
+4. Give thorough, detailed answers. Explain context, impact, and relevant details. Use bullet points, headers, and numbered lists where appropriate.
 5. Always end with a "Sources:" section listing the chunk IDs used."""
 
 

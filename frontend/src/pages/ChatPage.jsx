@@ -66,10 +66,21 @@ function AssistantBubble({ answer, sources, model, loading }) {
 }
 
 export default function ChatPage() {
-  const [messages, setMessages] = useState([]);
+  const [messages, setMessages] = useState(() => {
+    try {
+      const saved = localStorage.getItem("cti_chat_history");
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
   const [loading, setLoading] = useState(false);
   const [input, setInput] = useState("");
   const bottomRef = useRef(null);
+
+  useEffect(() => {
+    localStorage.setItem("cti_chat_history", JSON.stringify(messages));
+  }, [messages]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -99,6 +110,11 @@ export default function ChatPage() {
     }
   }
 
+  function handleClear() {
+    setMessages([]);
+    localStorage.removeItem("cti_chat_history");
+  }
+
   function handleKeyDown(e) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -120,6 +136,14 @@ export default function ChatPage() {
 
       {messages.length > 0 && (
         <div className="flex-1 overflow-y-auto py-6 space-y-4">
+          <div className="flex justify-end">
+            <button
+              onClick={handleClear}
+              className="text-xs text-gray-500 hover:text-red-400 transition-colors"
+            >
+              Clear chat
+            </button>
+          </div>
           {messages.map((msg, i) =>
             msg.role === "user" ? (
               <UserBubble key={i} text={msg.text} />
