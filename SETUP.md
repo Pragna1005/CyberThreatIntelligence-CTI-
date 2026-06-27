@@ -10,7 +10,7 @@ Install these before starting:
 
 | Tool | Version | Install |
 |------|---------|---------|
-| Python | 3.12 (arm64 on Apple Silicon) | [python.org](https://www.python.org/downloads/) |
+| Python | 3.12  | [python.org](https://www.python.org/downloads/) |
 | Node.js | 18+ | [nodejs.org](https://nodejs.org/) |
 | Ollama | Any | [ollama.com](https://ollama.com/) |
 

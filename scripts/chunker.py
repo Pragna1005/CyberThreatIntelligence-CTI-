@@ -221,7 +221,8 @@ def chunk_security_updates():
             f"Exploitability: {exploitability} | "
             f"Mitigation available: {'Yes' if has_mit else 'No'} | "
             f"Workaround available: {'Yes' if has_wa else 'No'} | "
-            f"CVSS Vector: {cvss}"
+            f"CVSS Vector: {cvss} | "
+            f"URL: {url}"
         )
 
         chunks.append({
