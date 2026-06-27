@@ -34,14 +34,28 @@ Rules:
 3. If the context does not contain enough information to answer, say:
    "I don't have enough information in the current knowledge base to answer this."
 4. Give thorough, detailed answers. Explain context, impact, and relevant details. Use bullet points, headers, and numbered lists where appropriate.
-5. Always end with a "Sources:" section listing the chunk IDs used."""
+5. When a URL is provided in the context for a source, include it in your answer as a reference link.
+6. Always end with a "Sources:" section listing the chunk IDs and any associated URLs."""
+
+
+def _extract_url(chunk: RetrievedChunk) -> str:
+    """Pull a URL from chunk metadata regardless of source type."""
+    return (
+        chunk.metadata.get("url") or
+        chunk.metadata.get("reference") or
+        ""
+    )
 
 
 def _build_context_block(chunks: list[RetrievedChunk]) -> str:
     """Format retrieved chunks into a numbered context block for the prompt."""
     lines = []
     for i, chunk in enumerate(chunks, 1):
-        lines.append(f"[{i}] Source: {chunk.source} | ID: {chunk.chunk_id} | Score: {chunk.score}")
+        url = _extract_url(chunk)
+        header = f"[{i}] Source: {chunk.source} | ID: {chunk.chunk_id} | Score: {chunk.score}"
+        if url:
+            header += f" | URL: {url}"
+        lines.append(header)
         lines.append(chunk.text)
         lines.append("")
     return "\n".join(lines)
@@ -114,6 +128,7 @@ def generate(
             "source":       c.source,
             "score":        c.score,
             "text_preview": c.text[:120],
+            "url":          _extract_url(c),
         }
         for c in chunks
     ]

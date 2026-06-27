@@ -15,6 +15,7 @@ class SourceItem(BaseModel):
     source:       str
     score:        float
     text_preview: str
+    url:          str = ""
 
 
 class QueryResponse(BaseModel):

@@ -1,6 +1,6 @@
 import SourceBadge from "./SourceBadge";
 
-export default function ResultCard({ source, chunk_id, score, text_preview }) {
+export default function ResultCard({ source, chunk_id, score, text_preview, url }) {
   return (
     <div className="border border-gray-700 rounded-lg p-4 bg-gray-800 hover:border-gray-500 transition-colors">
       <div className="flex items-center justify-between mb-2">
@@ -15,6 +15,16 @@ export default function ResultCard({ source, chunk_id, score, text_preview }) {
       <p className="text-sm text-gray-300 leading-relaxed line-clamp-3">
         {text_preview}
       </p>
+      {url && (
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mt-2 inline-block text-xs text-blue-400 hover:text-blue-300 hover:underline break-all"
+        >
+          {url}
+        </a>
+      )}
     </div>
   );
 }
