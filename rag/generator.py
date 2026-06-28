@@ -117,9 +117,13 @@ def generate(
                 "temperature": TEMPERATURE,
             },
         },
-        timeout=120,
+        timeout=300,
     )
-    response.raise_for_status()
+    if not response.ok:
+        raise requests.HTTPError(
+            f"Ollama returned {response.status_code}: {response.text[:300]}",
+            response=response,
+        )
     answer = response.json().get("response", "").strip()
 
     sources = [
