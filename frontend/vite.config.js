@@ -6,7 +6,12 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
     proxy: {
-      '/api': 'http://localhost:8000',
+      '/api': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        proxyTimeout: 300000,   // 5 min — uploading + embedding takes time
+        timeout: 300000,
+      },
     },
   },
 })

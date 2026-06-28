@@ -28,14 +28,14 @@ You answer questions about cybersecurity threats, attack techniques, malware, \
 vulnerabilities, and indicators of compromise (IOCs).
 
 Rules:
-1. Answer ONLY using the provided context. Do not use outside knowledge.
-2. Always cite your sources using the identifiers in the context \
-(e.g. T1566, CVE-2026-XXXX, IOC value).
-3. If the context does not contain enough information to answer, say:
-   "I don't have enough information in the current knowledge base to answer this."
-4. Give thorough, detailed answers. Explain context, impact, and relevant details. Use bullet points, headers, and numbered lists where appropriate.
-5. When a URL is present in the context (marked as URL: ...), you MUST copy and print the full URL directly in your answer. Never say "see Source [X]" or "provided in Source [X]" — always print the actual URL text.
-6. Always end with a "Sources:" section listing each chunk ID and its full URL (if available)."""
+1. Answer using ONLY the provided context. Do not use outside knowledge.
+2. The context contains structured intelligence records. Use ALL of them to build your answer.
+3. For IOC records: list the IOC value, type, malware family, confidence, and reference URL.
+4. For CVE/vulnerability records: summarize the CVE ID, affected product, severity, and advisory URL.
+5. For MITRE technique records: explain the technique and how it is used.
+6. Always cite the chunk ID when referencing a record.
+7. Only say "I don't have enough information" if the context contains zero records.
+8. End with a "Sources:" section listing the chunk IDs used."""
 
 
 def _extract_url(chunk: RetrievedChunk) -> str:
@@ -47,16 +47,52 @@ def _extract_url(chunk: RetrievedChunk) -> str:
     return ""
 
 
+def _format_chunk_text(chunk: RetrievedChunk) -> str:
+    """Convert raw chunk metadata into a readable bullet-point block for the LLM."""
+    m = chunk.metadata
+    url = _extract_url(chunk)
+
+    if chunk.source == "ThreatFox":
+        lines = [
+            f"  - IOC Value: {m.get('ioc_value', 'N/A')}",
+            f"  - Type: {m.get('ioc_type', 'N/A')}",
+            f"  - Malware Family: {m.get('malware', 'Unknown')}",
+            f"  - Threat Type: {m.get('threat_type', 'N/A')}",
+            f"  - Confidence: {m.get('confidence_level', 'N/A')}%",
+            f"  - First Seen: {m.get('first_seen_utc', 'N/A')}",
+        ]
+        tags = m.get("tags") or []
+        if tags:
+            lines.append(f"  - Tags: {', '.join(str(t) for t in tags)}")
+        if url:
+            lines.append(f"  - Reference URL: {url}")
+        return "\n".join(lines)
+
+    if chunk.source == "MSRC":
+        lines = [
+            f"  - CVE ID: {m.get('cve_id', 'N/A')}",
+            f"  - Product: {m.get('product', 'N/A')}",
+            f"  - Severity: {m.get('severity', 'N/A')} (score: {m.get('base_score', 'N/A')})",
+            f"  - Exploitability: {m.get('exploitability', 'N/A')}",
+            f"  - Mitigation Available: {'Yes' if m.get('has_mitigation') else 'No'}",
+            f"  - Workaround Available: {'Yes' if m.get('has_workaround') else 'No'}",
+        ]
+        if m.get("cvss_vector"):
+            lines.append(f"  - CVSS Vector: {m['cvss_vector']}")
+        if url:
+            lines.append(f"  - Advisory URL: {url}")
+        return "\n".join(lines)
+
+    # MITRE or uploaded docs — use the raw text as-is
+    return chunk.text
+
+
 def _build_context_block(chunks: list[RetrievedChunk]) -> str:
     """Format retrieved chunks into a numbered context block for the prompt."""
     lines = []
     for i, chunk in enumerate(chunks, 1):
-        url = _extract_url(chunk)
-        header = f"[{i}] Source: {chunk.source} | ID: {chunk.chunk_id} | Score: {chunk.score}"
-        if url:
-            header += f" | URL: {url}"
-        lines.append(header)
-        lines.append(chunk.text)
+        lines.append(f"[{i}] Source: {chunk.source} | ID: {chunk.chunk_id}")
+        lines.append(_format_chunk_text(chunk))
         lines.append("")
     return "\n".join(lines)
 

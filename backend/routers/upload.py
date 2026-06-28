@@ -12,6 +12,7 @@ Endpoints:
     GET    /api/uploads             — list currently indexed uploads
 """
 
+import asyncio
 import hashlib
 import io
 import uuid
@@ -132,7 +133,12 @@ async def upload_file(file: UploadFile = File(...)):
     model  = _get_model()
     client = _get_client()
 
-    vectors = model.encode(chunks, normalize_embeddings=True, show_progress_bar=False).tolist()
+    # Run in a thread so the async event loop isn't blocked during CPU-bound encoding
+    loop = asyncio.get_event_loop()
+    vectors = await loop.run_in_executor(
+        None,
+        lambda: model.encode(chunks, normalize_embeddings=True, show_progress_bar=False).tolist(),
+    )
 
     points = [
         PointStruct(
