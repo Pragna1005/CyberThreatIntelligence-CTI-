@@ -40,11 +40,11 @@ Rules:
 
 def _extract_url(chunk: RetrievedChunk) -> str:
     """Pull a URL from chunk metadata regardless of source type."""
-    return (
-        chunk.metadata.get("url") or
-        chunk.metadata.get("reference") or
-        ""
-    )
+    for key in ("url", "reference"):
+        val = chunk.metadata.get(key)
+        if val and isinstance(val, str):
+            return val
+    return ""
 
 
 def _build_context_block(chunks: list[RetrievedChunk]) -> str:
