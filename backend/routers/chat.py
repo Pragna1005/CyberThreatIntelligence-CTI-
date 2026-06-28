@@ -11,7 +11,7 @@ def chat(req: QueryRequest):
     Unified chatbot endpoint — searches ALL sources (MITRE + ThreatFox + MSRC).
     Best for cross-domain questions like 'Tell me about phishing threats targeting Microsoft'.
     """
-    result = generate(req.query, top_k=req.top_k, source_filter=None)
+    result = generate(req.query, top_k=req.top_k, source_filter=None, upload_ids=req.upload_ids or None)
     return QueryResponse(
         query=result.query,
         answer=result.answer,

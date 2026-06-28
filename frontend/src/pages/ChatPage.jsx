@@ -240,7 +240,8 @@ export default function ChatPage() {
 
     setLoading(true);
     try {
-      const data = await api.chat(query);
+      const activeUploadIds = uploads.map((u) => u.uploadId);
+      const data = await api.chat(query, 5, activeUploadIds);
       updateConversation(convId, (c) => ({
         ...c,
         messages: [

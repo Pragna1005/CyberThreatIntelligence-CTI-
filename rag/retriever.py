@@ -12,7 +12,7 @@ from typing import Optional
 
 from dotenv import load_dotenv, find_dotenv
 from qdrant_client import QdrantClient
-from qdrant_client.models import Filter, FieldCondition, MatchValue
+from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchAny
 from sentence_transformers import SentenceTransformer
 
 load_dotenv(find_dotenv(usecwd=True))
@@ -108,6 +108,52 @@ def retrieve(
             metadata={k: v for k, v in p.items()
                       if k not in ("chunk_id", "source", "text")},
         ))
+
+    return results
+
+
+def retrieve_from_uploads(
+    query: str,
+    upload_ids: list[str],
+    top_k_per_upload: int = 3,
+) -> list[RetrievedChunk]:
+    """
+    Retrieve chunks from specific user-uploaded documents, filtered by upload_id.
+
+    Used so that the user's uploaded file is always represented in the context
+    regardless of whether the generic query semantically matches the document text
+    (e.g. "explain the pdf" won't match the PDF content in a normal vector search).
+    """
+    if not upload_ids:
+        return []
+
+    model  = _get_model()
+    client = _get_client()
+
+    prefixed_query = BGE_QUERY_PREFIX + query
+    vector = model.encode(prefixed_query, normalize_embeddings=True).tolist()
+
+    results = []
+    for uid in upload_ids:
+        response = client.query_points(
+            collection_name=COLLECTION_NAME,
+            query=vector,
+            query_filter=Filter(
+                must=[FieldCondition(key="upload_id", match=MatchValue(value=uid))]
+            ),
+            limit=top_k_per_upload,
+            with_payload=True,
+        )
+        for point in response.points:
+            p = point.payload
+            results.append(RetrievedChunk(
+                chunk_id=p.get("chunk_id", ""),
+                source=p.get("source", "UserUpload"),
+                text=p.get("text", ""),
+                score=round(point.score, 4),
+                metadata={k: v for k, v in p.items()
+                          if k not in ("chunk_id", "source", "text")},
+            ))
 
     return results
 

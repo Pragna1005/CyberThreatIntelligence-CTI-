@@ -14,7 +14,7 @@ from dataclasses import dataclass
 import requests
 from dotenv import load_dotenv, find_dotenv
 
-from rag.retriever import RetrievedChunk, retrieve
+from rag.retriever import RetrievedChunk, retrieve, retrieve_from_uploads
 
 load_dotenv(find_dotenv(usecwd=True))
 
@@ -83,19 +83,31 @@ def generate(
     query: str,
     top_k: int = 5,
     source_filter: str | None = None,
+    upload_ids: list[str] | None = None,
 ) -> RAGResponse:
     """
     Full RAG pipeline: retrieve → augment → generate.
 
-    Args:
-        query:         User's natural language question.
-        top_k:         Number of chunks to retrieve.
-        source_filter: Optionally restrict retrieval to one source.
-
-    Returns:
-        RAGResponse with the answer, sources used, and metadata.
+    When upload_ids are provided, chunks from those specific documents are
+    fetched separately and merged into the context so the LLM always sees
+    the uploaded content — even when the query phrasing ("explain the pdf")
+    has low semantic similarity to the document text.
     """
-    chunks = retrieve(query, top_k=top_k, source_filter=source_filter)
+    # Retrieve from the general knowledge base
+    kb_chunks = retrieve(query, top_k=top_k, source_filter=source_filter)
+
+    # Retrieve from the user's uploaded documents (bypasses semantic mismatch)
+    upload_chunks: list[RetrievedChunk] = []
+    if upload_ids:
+        upload_chunks = retrieve_from_uploads(query, upload_ids, top_k_per_upload=3)
+
+    # Merge: upload chunks go first so the LLM sees them prominently
+    seen_ids: set[str] = set()
+    chunks: list[RetrievedChunk] = []
+    for c in upload_chunks + kb_chunks:
+        if c.chunk_id not in seen_ids:
+            seen_ids.add(c.chunk_id)
+            chunks.append(c)
 
     if not chunks:
         return RAGResponse(
