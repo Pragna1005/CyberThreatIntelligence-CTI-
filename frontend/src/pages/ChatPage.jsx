@@ -95,7 +95,7 @@ function AssistantBubble({ answer, sources, model, loading }) {
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 
-function Sidebar({ conversations, activeId, onSelect, onNew, onDelete }) {
+function Sidebar({ conversations, activeId, onSelect, onNew, onDelete, uploads, onDeleteUpload }) {
   return (
     <aside className="w-64 flex-shrink-0 bg-gray-900 border-r border-gray-700 flex flex-col h-full">
       {/* New chat button */}
@@ -137,6 +137,29 @@ function Sidebar({ conversations, activeId, onSelect, onNew, onDelete }) {
         ))}
       </div>
 
+      {/* Uploaded documents section */}
+      {uploads.length > 0 && (
+        <div className="border-t border-gray-700 p-3">
+          <p className="text-xs font-semibold text-gray-500 mb-2 uppercase tracking-wide">Uploaded Docs</p>
+          <div className="space-y-1">
+            {uploads.map((u) => (
+              <div key={u.uploadId} className="group flex items-center gap-2 px-2 py-1.5 rounded-lg bg-gray-800">
+                <span className="text-green-400 text-xs flex-shrink-0">📄</span>
+                <span className="flex-1 truncate text-xs text-gray-300" title={u.filename}>{u.filename}</span>
+                <span className="text-xs text-gray-600 flex-shrink-0">{u.chunkCount}c</span>
+                <button
+                  onClick={() => onDeleteUpload(u.uploadId)}
+                  className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400 transition-all text-xs flex-shrink-0"
+                  title="Remove from knowledge base"
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Footer */}
       <div className="p-3 border-t border-gray-700">
         <p className="text-xs text-gray-600 text-center">CTI Bot · {conversations.length} chat{conversations.length !== 1 ? "s" : ""}</p>
@@ -157,6 +180,10 @@ export default function ChatPage() {
   });
   const [loading, setLoading] = useState(false);
   const [input, setInput] = useState("");
+  const [uploads, setUploads] = useState([]); // [{ uploadId, filename, chunkCount }]
+  const [uploadError, setUploadError] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef(null);
   const bottomRef = useRef(null);
 
   const activeConversation = conversations.find((c) => c.id === activeId) || null;
@@ -234,6 +261,36 @@ export default function ChatPage() {
     }
   }
 
+  async function handleFileSelect(e) {
+    const file = e.target.files?.[0];
+    if (!fileInputRef.current) return;
+    fileInputRef.current.value = "";
+    if (!file) return;
+
+    setUploadError(null);
+    setUploading(true);
+    try {
+      const data = await api.uploadFile(file);
+      setUploads((prev) => [
+        ...prev,
+        { uploadId: data.upload_id, filename: data.filename, chunkCount: data.chunk_count },
+      ]);
+    } catch (err) {
+      setUploadError(err.message);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function handleDeleteUpload(uploadId) {
+    try {
+      await api.deleteUpload(uploadId);
+      setUploads((prev) => prev.filter((u) => u.uploadId !== uploadId));
+    } catch (err) {
+      setUploadError(err.message);
+    }
+  }
+
   function handleNewChat() {
     const conv = makeConversation();
     setConversations((prev) => [...prev, conv]);
@@ -270,6 +327,8 @@ export default function ChatPage() {
         onSelect={handleSelectConversation}
         onNew={handleNewChat}
         onDelete={handleDeleteConversation}
+        uploads={uploads}
+        onDeleteUpload={handleDeleteUpload}
       />
 
       {/* Main chat area */}
@@ -309,7 +368,61 @@ export default function ChatPage() {
 
         {/* Input bar */}
         <div className="px-4 py-4 max-w-4xl w-full mx-auto">
+          {/* Hidden file input */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".pdf,.txt,.doc,.docx"
+            className="hidden"
+            onChange={handleFileSelect}
+          />
+
+          {/* Uploaded file badges */}
+          {uploads.length > 0 && (
+            <div className="flex flex-wrap gap-2 mb-2">
+              {uploads.map((u) => (
+                <span
+                  key={u.uploadId}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-green-900/40 border border-green-700/50 text-green-300 text-xs rounded-full"
+                >
+                  <span>📄</span>
+                  <span className="max-w-[160px] truncate">{u.filename}</span>
+                  <span className="text-green-600">{u.chunkCount} chunks</span>
+                  <button
+                    onClick={() => handleDeleteUpload(u.uploadId)}
+                    className="ml-0.5 text-green-600 hover:text-red-400 transition-colors"
+                    title="Remove from knowledge base"
+                  >
+                    ✕
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* Upload error */}
+          {uploadError && (
+            <div className="flex items-center justify-between mb-2 px-3 py-2 bg-red-900/30 border border-red-700/50 rounded-xl text-xs text-red-300">
+              <span>{uploadError}</span>
+              <button onClick={() => setUploadError(null)} className="ml-2 hover:text-red-100">✕</button>
+            </div>
+          )}
+
           <div className="flex gap-2 items-end bg-gray-800 border border-gray-700 rounded-2xl px-4 py-3 focus-within:border-blue-500 transition-colors">
+            {/* Attach button */}
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              title="Upload PDF, TXT, or DOCX to add to knowledge base"
+              className="flex-shrink-0 text-gray-400 hover:text-blue-400 disabled:text-gray-600 transition-colors pb-0.5 text-lg leading-none"
+            >
+              {uploading ? (
+                <span className="text-sm animate-pulse text-blue-400">⟳</span>
+              ) : (
+                "📎"
+              )}
+            </button>
+
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
@@ -330,6 +443,7 @@ export default function ChatPage() {
           </div>
           <p className="text-center text-xs text-gray-600 mt-2">
             Answers are grounded in retrieved knowledge base context only.
+            {uploads.length > 0 && <span className="text-green-700"> · {uploads.length} document{uploads.length !== 1 ? "s" : ""} added to KB</span>}
           </p>
         </div>
       </div>

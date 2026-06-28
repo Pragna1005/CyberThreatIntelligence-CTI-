@@ -24,7 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import requests
 from qdrant_client.http.exceptions import ResponseHandlingException
 
-from backend.routers import mitre, cert, threats, chat
+from backend.routers import mitre, cert, threats, chat, upload
 
 app = FastAPI(
     title="Cyber Defence Threat Intelligence Bot",
@@ -44,6 +44,7 @@ app.include_router(mitre.router)
 app.include_router(cert.router)
 app.include_router(threats.router)
 app.include_router(chat.router)
+app.include_router(upload.router)
 
 
 @app.exception_handler(ResponseHandlingException)
