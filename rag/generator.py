@@ -8,6 +8,7 @@ The prompt strictly instructs the model to:
   - Say "I don't have enough information" if context is insufficient
 """
 
+import json
 import os
 import re
 import time
@@ -18,7 +19,7 @@ from html.parser import HTMLParser
 import requests
 from dotenv import load_dotenv, find_dotenv
 
-from rag.retriever import RetrievedChunk, retrieve, retrieve_from_uploads, retrieve_by_cve_id
+from rag.retriever import RetrievedChunk, retrieve, retrieve_from_uploads, retrieve_by_cve_id, encode_query
 from backend.metrics import (
     RAG_LATENCY,
     LLM_LATENCY,
@@ -30,10 +31,10 @@ from mlops.tracker import log_rag_query
 
 load_dotenv(find_dotenv(usecwd=True))
 
-LLM_MODEL   = os.environ.get("OLLAMA_MODEL", "qwen:7b")
+LLM_MODEL       = os.environ.get("OLLAMA_MODEL", "qwen:7b")
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
-MAX_TOKENS  = 4096
-TEMPERATURE = 0.2          # low temp = more factual, less creative
+MAX_TOKENS      = 1024   # 4096 was the bottleneck; 1024 covers all CTI answers
+TEMPERATURE     = 0.2
 
 SYSTEM_PROMPT = """You are a Cyber Defence Threat Intelligence assistant.
 You answer questions about cybersecurity threats, attack techniques, malware, \
@@ -197,7 +198,7 @@ def _fetch_url_text(url: str) -> str | None:
             url,
             headers={"User-Agent": "CTIBot/1.0 (cyber threat intelligence assistant)"},
         )
-        with urllib.request.urlopen(req, timeout=12) as resp:
+        with urllib.request.urlopen(req, timeout=5) as resp:
             content_type = resp.headers.get("Content-Type", "")
             raw = resp.read(_WEB_MAX_CHARS * 6).decode("utf-8", errors="ignore")
 
@@ -376,6 +377,86 @@ class RAGResponse:
     model:    str
 
 
+def _retrieve_all(
+    query: str,
+    top_k: int,
+    source_filter: str | None,
+    upload_ids: list[str] | None,
+) -> tuple[list[RetrievedChunk], list[RetrievedChunk], str]:
+    """
+    Run all retrieval steps and return (all_chunks, upload_chunks, prompt_query).
+    Encodes the query embedding once and reuses it across retrieve calls.
+    """
+    # Encode once — reused for both KB and upload retrieval when queries match
+    kb_vector = encode_query(query)
+
+    web_chunks = _fetch_query_urls(query)
+
+    cve_chunks: list[RetrievedChunk] = []
+    for cve_id in _cve_ids_from_urls(query):
+        cve_chunks.extend(retrieve_by_cve_id(cve_id))
+
+    kb_chunks = retrieve(query, top_k=top_k, source_filter=source_filter, vector=kb_vector)
+
+    upload_chunks: list[RetrievedChunk] = []
+    if upload_ids:
+        if _is_document_meta_query(query):
+            retrieval_query = "main content introduction summary key points overview"
+            upload_vector = encode_query(retrieval_query)
+        else:
+            retrieval_query = query
+            upload_vector = kb_vector  # reuse — same query, no re-encode needed
+        upload_chunks = retrieve_from_uploads(retrieval_query, upload_ids, top_k_per_upload=6, vector=upload_vector)
+
+    seen_ids: set[str] = set()
+    chunks: list[RetrievedChunk] = []
+    for c in web_chunks + cve_chunks + upload_chunks + kb_chunks:
+        if c.chunk_id not in seen_ids:
+            seen_ids.add(c.chunk_id)
+            chunks.append(c)
+
+    return chunks, upload_chunks, bool(web_chunks)
+
+
+def _build_prompt(
+    query: str,
+    chunks: list[RetrievedChunk],
+    upload_chunks: list[RetrievedChunk],
+    has_web: bool,
+    upload_ids: list[str] | None,
+    history: list[dict] | None,
+) -> str:
+    is_doc_explain = _is_document_meta_query(query) and bool(upload_chunks)
+    if is_doc_explain:
+        doc_text = "\n\n".join(
+            f"[Chunk {i + 1} — ID: {c.chunk_id}]:\n{c.text}"
+            for i, c in enumerate(upload_chunks)
+        )
+        return (
+            f"{DOCUMENT_SYSTEM_PROMPT}\n\n"
+            f"DOCUMENT CHUNKS:\n{doc_text}\n\n"
+            f"USER REQUEST: {query}\n\n"
+            f"Write your explanation now:"
+        )
+    return (
+        f"{SYSTEM_PROMPT}\n\n"
+        f"{_build_user_prompt(query, chunks, history=history or [], has_uploads=bool(upload_ids), has_web=has_web)}"
+    )
+
+
+def _make_sources(chunks: list[RetrievedChunk]) -> list[dict]:
+    return [
+        {
+            "chunk_id":     c.chunk_id,
+            "source":       c.source,
+            "score":        c.score,
+            "text_preview": c.text[:120],
+            "url":          _extract_url(c),
+        }
+        for c in chunks
+    ]
+
+
 def generate(
     query: str,
     top_k: int = 5,
@@ -383,47 +464,8 @@ def generate(
     upload_ids: list[str] | None = None,
     history: list[dict] | None = None,
 ) -> RAGResponse:
-    """
-    Full RAG pipeline: retrieve → augment → generate.
-
-    history is a list of {role, content} dicts representing recent conversation
-    turns. It is injected into the prompt so the LLM can answer follow-up
-    questions that reference previous answers.
-    """
-    # Fetch any URLs the user pasted into the query
-    web_chunks = _fetch_query_urls(query)
-
-    # For MSRC/vulnerability URLs: extract CVE IDs and do a direct KB lookup.
-    # Semantic search would return similar-but-wrong CVEs; exact field match finds
-    # the right one even when the live page can't be fetched (JS SPA).
-    cve_chunks: list[RetrievedChunk] = []
-    for cve_id in _cve_ids_from_urls(query):
-        cve_chunks.extend(retrieve_by_cve_id(cve_id))
-
-    # Retrieve from the general knowledge base
-    kb_chunks = retrieve(query, top_k=top_k, source_filter=source_filter)
-
-    # Retrieve from the user's uploaded documents.
-    # When the user asks a meta-question ("explain the pdf", "summarize this document") the
-    # query has low semantic similarity to the actual document text, so we substitute a
-    # neutral content-retrieval query that matches document body text much better.
-    upload_chunks: list[RetrievedChunk] = []
-    if upload_ids:
-        if _is_document_meta_query(query):
-            retrieval_query = "main content introduction summary key points overview"
-        else:
-            retrieval_query = query
-        upload_chunks = retrieve_from_uploads(retrieval_query, upload_ids, top_k_per_upload=6)
-
-    # Merge order: web → exact CVE → upload → semantic KB
-    # Exact CVE matches are prioritised over semantic KB results so the right
-    # CVE is always prominent even when the live page couldn't be fetched.
-    seen_ids: set[str] = set()
-    chunks: list[RetrievedChunk] = []
-    for c in web_chunks + cve_chunks + upload_chunks + kb_chunks:
-        if c.chunk_id not in seen_ids:
-            seen_ids.add(c.chunk_id)
-            chunks.append(c)
+    """Full RAG pipeline: retrieve → augment → generate (blocking)."""
+    chunks, upload_chunks, has_web = _retrieve_all(query, top_k, source_filter, upload_ids)
 
     if not chunks:
         return RAGResponse(
@@ -433,26 +475,9 @@ def generate(
             model=LLM_MODEL,
         )
 
-    # Use a simple, direct prompt when explaining/summarising an uploaded document.
-    # The full 11-rule SYSTEM_PROMPT overloads small models (qwen2.5:3b) and causes
-    # them to refuse despite having valid context.
-    is_doc_explain = _is_document_meta_query(query) and bool(upload_chunks)
-    if is_doc_explain:
-        doc_text = "\n\n".join(
-            f"[Chunk {i + 1} — ID: {c.chunk_id}]:\n{c.text}"
-            for i, c in enumerate(upload_chunks)
-        )
-        prompt = (
-            f"{DOCUMENT_SYSTEM_PROMPT}\n\n"
-            f"DOCUMENT CHUNKS:\n{doc_text}\n\n"
-            f"USER REQUEST: {query}\n\n"
-            f"Write your explanation now:"
-        )
-    else:
-        prompt = f"{SYSTEM_PROMPT}\n\n{_build_user_prompt(query, chunks, history=history or [], has_uploads=bool(upload_ids), has_web=bool(web_chunks))}"
+    prompt = _build_prompt(query, chunks, upload_chunks, has_web, upload_ids, history)
 
     rag_start = time.perf_counter()
-
     llm_start = time.perf_counter()
     response = requests.post(
         f"{OLLAMA_BASE_URL}/api/generate",
@@ -460,10 +485,7 @@ def generate(
             "model": LLM_MODEL,
             "prompt": prompt,
             "stream": False,
-            "options": {
-                "num_predict": MAX_TOKENS,
-                "temperature": TEMPERATURE,
-            },
+            "options": {"num_predict": MAX_TOKENS, "temperature": TEMPERATURE},
         },
         timeout=300,
     )
@@ -476,8 +498,6 @@ def generate(
         )
     answer = response.json().get("response", "").strip()
 
-    # Fallback: if the model still refuses despite having chunks, build the answer
-    # directly from the chunk text so the user always gets something useful.
     if _is_refusal(answer) and chunks:
         answer = _fallback_from_chunks(chunks)
 
@@ -485,12 +505,10 @@ def generate(
     RAG_LATENCY.labels(source_filter=source_filter or "all").observe(rag_duration)
     CHUNKS_RETRIEVED.observe(len(chunks))
 
-    # Hallucination scoring (off by default; enable via HALLUCINATION_SCORING=true)
     h_score = hallucination_scorer.score(answer, [c.text for c in chunks])
     if h_score is not None:
         HALLUCINATION_SCORE.observe(h_score)
 
-    # MLflow logging (best-effort — never raises)
     log_rag_query(
         query=query,
         model=LLM_MODEL,
@@ -501,18 +519,88 @@ def generate(
         hallucination_score=h_score,
     )
 
-    sources = [
-        {
-            "chunk_id":     c.chunk_id,
-            "source":       c.source,
-            "score":        c.score,
-            "text_preview": c.text[:120],
-            "url":          _extract_url(c),
-        }
-        for c in chunks
-    ]
+    return RAGResponse(answer=answer, sources=_make_sources(chunks), query=query, model=LLM_MODEL)
 
-    return RAGResponse(answer=answer, sources=sources, query=query, model=LLM_MODEL)
+
+def stream_generate(
+    query: str,
+    top_k: int = 5,
+    source_filter: str | None = None,
+    upload_ids: list[str] | None = None,
+    history: list[dict] | None = None,
+):
+    """
+    Streaming RAG pipeline. Yields dicts:
+      {"token": str}               — one per Ollama token
+      {"done": True, "sources": list, "model": str}  — final event
+    """
+    chunks, upload_chunks, has_web = _retrieve_all(query, top_k, source_filter, upload_ids)
+
+    if not chunks:
+        yield {
+            "done": True,
+            "sources": [],
+            "model": LLM_MODEL,
+            "answer": "I don't have enough information in the current knowledge base to answer this.",
+        }
+        return
+
+    prompt = _build_prompt(query, chunks, upload_chunks, has_web, upload_ids, history)
+    sources = _make_sources(chunks)
+
+    response = requests.post(
+        f"{OLLAMA_BASE_URL}/api/generate",
+        json={
+            "model": LLM_MODEL,
+            "prompt": prompt,
+            "stream": True,
+            "options": {"num_predict": MAX_TOKENS, "temperature": TEMPERATURE},
+        },
+        stream=True,
+        timeout=300,
+    )
+
+    if not response.ok:
+        raise requests.HTTPError(
+            f"Ollama returned {response.status_code}: {response.text[:300]}",
+            response=response,
+        )
+
+    rag_start = time.perf_counter()
+    full_answer = ""
+    for line in response.iter_lines():
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        token = data.get("response", "")
+        if token:
+            full_answer += token
+            yield {"token": token}
+        if data.get("done"):
+            break
+
+    rag_duration = time.perf_counter() - rag_start
+    RAG_LATENCY.labels(source_filter=source_filter or "all").observe(rag_duration)
+    CHUNKS_RETRIEVED.observe(len(chunks))
+
+    h_score = hallucination_scorer.score(full_answer, [c.text for c in chunks])
+    if h_score is not None:
+        HALLUCINATION_SCORE.observe(h_score)
+
+    log_rag_query(
+        query=query,
+        model=LLM_MODEL,
+        top_k=top_k,
+        source_filter=source_filter,
+        latency_s=rag_duration,
+        chunks_count=len(chunks),
+        hallucination_score=h_score,
+    )
+
+    yield {"done": True, "sources": sources, "model": LLM_MODEL}
 
 
 if __name__ == "__main__":

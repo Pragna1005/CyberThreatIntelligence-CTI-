@@ -68,11 +68,43 @@ async function deleteUpload(uploadId) {
   }
 }
 
+async function* chatStream(question, topK = 5, uploadIds = [], history = []) {
+  const res = await fetch(`${BASE_URL}/api/chat/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query: question, top_k: topK, upload_ids: uploadIds, history }),
+  });
+
+  if (!res.ok) {
+    let message = `API error: ${res.status}`;
+    try { const b = await res.json(); if (b?.detail) message = b.detail; } catch { /* ignore */ }
+    throw new Error(message);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (line.startsWith("data: ")) {
+        try { yield JSON.parse(line.slice(6)); } catch { /* skip malformed */ }
+      }
+    }
+  }
+}
+
 export const api = {
   mitre:        (q, k) => query("/api/mitre_query",  q, k),
   cert:         (q, k) => query("/api/cert_query",   q, k),
   threat:       (q, k) => query("/api/threat_query", q, k),
   chat:         (q, k, uploadIds, history) => query("/api/chat", q, k, uploadIds, history),
+  chatStream,
   uploadFile,
   deleteUpload,
 };

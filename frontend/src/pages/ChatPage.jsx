@@ -234,6 +234,13 @@ export default function ChatPage() {
       setActiveId(convId);
     }
 
+    // Capture history BEFORE adding the new user message
+    const currentMessages = conversations.find((c) => c.id === convId)?.messages || [];
+    const history = currentMessages.slice(-6).map((m) => ({
+      role: m.role,
+      content: m.role === "user" ? m.text : m.answer,
+    }));
+
     // Add user message
     setConversations((prev) =>
       prev.map((c) =>
@@ -248,26 +255,48 @@ export default function ChatPage() {
     );
 
     setLoading(true);
+    const activeUploadIds = uploads.map((u) => u.uploadId);
+    let firstToken = true;
+    let accumulated = "";
+
     try {
-      const activeUploadIds = uploads.map((u) => u.uploadId);
+      for await (const event of api.chatStream(query, 5, activeUploadIds, history)) {
+        if (event.error) {
+          throw new Error(event.error);
+        } else if (event.token !== undefined) {
+          accumulated += event.token;
+          const snapshot = accumulated;
 
-      // Send the last 6 messages (3 user+assistant pairs) as conversation history
-      // so the model can handle follow-up questions and references to earlier answers.
-      const currentMessages = conversations.find((c) => c.id === convId)?.messages || [];
-      const history = currentMessages.slice(-6).map((m) => ({
-        role: m.role,
-        content: m.role === "user" ? m.text : m.answer,
-      }));
-
-      const data = await api.chat(query, 5, activeUploadIds, history);
-      updateConversation(convId, (c) => ({
-        ...c,
-        messages: [
-          ...c.messages,
-          { role: "assistant", answer: data.answer, sources: data.sources, model: data.model },
-        ],
-      }));
+          if (firstToken) {
+            // Replace the loading spinner with a real (streaming) assistant message
+            firstToken = false;
+            setLoading(false);
+            updateConversation(convId, (c) => ({
+              ...c,
+              messages: [...c.messages, { role: "assistant", answer: snapshot, sources: [], model: null }],
+            }));
+          } else {
+            updateConversation(convId, (c) => ({
+              ...c,
+              messages: c.messages.map((m, i) =>
+                i === c.messages.length - 1 ? { ...m, answer: snapshot } : m
+              ),
+            }));
+          }
+        } else if (event.done) {
+          // Attach sources and model to the completed message
+          updateConversation(convId, (c) => ({
+            ...c,
+            messages: c.messages.map((m, i) =>
+              i === c.messages.length - 1
+                ? { ...m, sources: event.sources ?? [], model: event.model ?? null }
+                : m
+            ),
+          }));
+        }
+      }
     } catch (e) {
+      setLoading(false);
       updateConversation(convId, (c) => ({
         ...c,
         messages: [

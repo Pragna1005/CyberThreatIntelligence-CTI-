@@ -70,10 +70,16 @@ class RetrievedChunk:
     metadata:  dict
 
 
+def encode_query(query: str) -> list[float]:
+    """Embed a query string once; pass the result to retrieve/retrieve_from_uploads to avoid re-encoding."""
+    return _get_model().encode(BGE_QUERY_PREFIX + query, normalize_embeddings=True).tolist()
+
+
 def retrieve(
     query: str,
     top_k: int = DEFAULT_TOP_K,
     source_filter: Optional[str] = None,   # "MITRE" | "ThreatFox" | "MSRC"
+    vector: Optional[list[float]] = None,  # pre-computed embedding; computed here if None
 ) -> list[RetrievedChunk]:
     """
     Embed query and return top_k most relevant chunks from Qdrant.
@@ -82,15 +88,15 @@ def retrieve(
         query:         Natural language question from the user.
         top_k:         Number of results to return.
         source_filter: Restrict results to one data source (optional).
+        vector:        Pre-computed query embedding (avoids re-encoding when reusing same query).
 
     Returns:
         List of RetrievedChunk sorted by relevance score descending.
     """
-    model  = _get_model()
     client = _get_client()
 
-    prefixed_query = BGE_QUERY_PREFIX + query
-    vector = model.encode(prefixed_query, normalize_embeddings=True).tolist()
+    if vector is None:
+        vector = encode_query(query)
 
     search_filter = None
     if source_filter:
@@ -128,6 +134,7 @@ def retrieve_from_uploads(
     query: str,
     upload_ids: list[str],
     top_k_per_upload: int = 3,
+    vector: Optional[list[float]] = None,  # pre-computed embedding; computed here if None
 ) -> list[RetrievedChunk]:
     """
     Retrieve chunks from specific user-uploaded documents, filtered by upload_id.
@@ -139,11 +146,10 @@ def retrieve_from_uploads(
     if not upload_ids:
         return []
 
-    model  = _get_model()
     client = _get_client()
 
-    prefixed_query = BGE_QUERY_PREFIX + query
-    vector = model.encode(prefixed_query, normalize_embeddings=True).tolist()
+    if vector is None:
+        vector = encode_query(query)
 
     results = []
     for uid in upload_ids:

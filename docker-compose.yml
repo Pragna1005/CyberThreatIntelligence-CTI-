@@ -15,6 +15,25 @@ services:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h
+    # Start serve in background, wait until ready, pull the model, then keep running.
+    # $$VAR escapes the $ so docker-compose passes $VAR through to the shell.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        /usr/bin/ollama serve &
+        SERVER_PID=$$!
+        until /usr/bin/ollama list >/dev/null 2>&1; do sleep 2; done
+        echo "Pulling model: ${OLLAMA_MODEL:-qwen2.5:3b}"
+        /usr/bin/ollama pull ${OLLAMA_MODEL:-qwen2.5:3b} || echo "Model already cached or pull failed — continuing"
+        wait $$SERVER_PID
+    healthcheck:
+      test: ["CMD", "/usr/bin/ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
 
   backend:
     build: .
@@ -25,13 +44,16 @@ services:
       - QDRANT_URL=http://qdrant:6333
       - QDRANT_API_KEY=
       - OLLAMA_BASE_URL=http://ollama:11434
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen:7b}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:3b}
       - MLFLOW_TRACKING_URI=http://mlflow:5000
       - HALLUCINATION_SCORING=${HALLUCINATION_SCORING:-false}
     depends_on:
-      - qdrant
-      - ollama
-      - mlflow
+      qdrant:
+        condition: service_started
+      ollama:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
     volumes:
       - ./chunks:/app/chunks
       - ./mlops:/app/mlops
