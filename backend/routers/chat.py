@@ -52,10 +52,8 @@ def chat_stream(req: QueryRequest):
             ):
                 yield f"data: {json.dumps(event)}\n\n"
         except _requests.RequestException:
-            yield (
-                f"data: {json.dumps({'error': 'The answer generation service is unavailable. '
-                                              'Ollama is not ready or the model is still loading.'})}\n\n"
-            )
+            msg = "The answer generation service is unavailable. Ollama is not ready or the model is still loading."
+            yield f"data: {json.dumps({'error': msg})}\n\n"
         except Exception as exc:
             yield f"data: {json.dumps({'error': str(exc)})}\n\n"
 
