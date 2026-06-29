@@ -27,6 +27,9 @@ import os
 import sys
 import time
 
+from mlops.freshness_check import write_freshness
+from mlops.tracker import ingestion_run
+
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 from sentence_transformers import SentenceTransformer
@@ -251,17 +254,34 @@ if __name__ == "__main__":
     model  = load_model()
 
     total_inserted = 0
-    for fname in CHUNK_FILES:
-        path = os.path.join(CHUNKS_DIR, fname)
-        if not os.path.exists(path):
-            print(f"\nWARNING: {fname} not found, skipping. Run chunker.py first.")
-            continue
-        total_inserted += ingest_file(client, model, path)
+    run_start = time.time()
+
+    with ingestion_run(
+        embedding_model=EMBEDDING_MODEL,
+        batch_size=BATCH_SIZE,
+        collection=COLLECTION_NAME,
+    ) as mlflow_metrics:
+        for fname in CHUNK_FILES:
+            path = os.path.join(CHUNKS_DIR, fname)
+            if not os.path.exists(path):
+                print(f"\nWARNING: {fname} not found, skipping. Run chunker.py first.")
+                continue
+            n = ingest_file(client, model, path)
+            total_inserted += n
+            mlflow_metrics[f"chunks_{fname.replace('.jsonl', '')}"] = n
+
+        run_duration = time.time() - run_start
+        mlflow_metrics["total_chunks"] = total_inserted
+        mlflow_metrics["duration_seconds"] = round(run_duration, 1)
 
     info = client.get_collection(COLLECTION_NAME)
     print(f"\nIngestion complete.")
     print(f"  Total inserted this run : {total_inserted}")
     print(f"  Total points in Qdrant  : {info.points_count}")
+    print(f"  Duration                : {run_duration:.1f}s")
+
+    write_freshness(chunks_total=total_inserted)
+    print(f"  Freshness record written to mlops/last_ingested.json")
 
     if not args.no_test:
         smoke_test(client, model)

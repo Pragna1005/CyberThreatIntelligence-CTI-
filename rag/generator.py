@@ -10,6 +10,7 @@ The prompt strictly instructs the model to:
 
 import os
 import re
+import time
 import urllib.request
 from dataclasses import dataclass
 from html.parser import HTMLParser
@@ -18,6 +19,14 @@ import requests
 from dotenv import load_dotenv, find_dotenv
 
 from rag.retriever import RetrievedChunk, retrieve, retrieve_from_uploads, retrieve_by_cve_id
+from backend.metrics import (
+    RAG_LATENCY,
+    LLM_LATENCY,
+    CHUNKS_RETRIEVED,
+    HALLUCINATION_SCORE,
+)
+from mlops import hallucination_scorer
+from mlops.tracker import log_rag_query
 
 load_dotenv(find_dotenv(usecwd=True))
 
@@ -442,6 +451,9 @@ def generate(
     else:
         prompt = f"{SYSTEM_PROMPT}\n\n{_build_user_prompt(query, chunks, history=history or [], has_uploads=bool(upload_ids), has_web=bool(web_chunks))}"
 
+    rag_start = time.perf_counter()
+
+    llm_start = time.perf_counter()
     response = requests.post(
         f"{OLLAMA_BASE_URL}/api/generate",
         json={
@@ -455,6 +467,8 @@ def generate(
         },
         timeout=300,
     )
+    LLM_LATENCY.observe(time.perf_counter() - llm_start)
+
     if not response.ok:
         raise requests.HTTPError(
             f"Ollama returned {response.status_code}: {response.text[:300]}",
@@ -466,6 +480,26 @@ def generate(
     # directly from the chunk text so the user always gets something useful.
     if _is_refusal(answer) and chunks:
         answer = _fallback_from_chunks(chunks)
+
+    rag_duration = time.perf_counter() - rag_start
+    RAG_LATENCY.labels(source_filter=source_filter or "all").observe(rag_duration)
+    CHUNKS_RETRIEVED.observe(len(chunks))
+
+    # Hallucination scoring (off by default; enable via HALLUCINATION_SCORING=true)
+    h_score = hallucination_scorer.score(answer, [c.text for c in chunks])
+    if h_score is not None:
+        HALLUCINATION_SCORE.observe(h_score)
+
+    # MLflow logging (best-effort — never raises)
+    log_rag_query(
+        query=query,
+        model=LLM_MODEL,
+        top_k=top_k,
+        source_filter=source_filter,
+        latency_s=rag_duration,
+        chunks_count=len(chunks),
+        hallucination_score=h_score,
+    )
 
     sources = [
         {

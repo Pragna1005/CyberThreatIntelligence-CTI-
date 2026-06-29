@@ -160,6 +160,107 @@ http://localhost:8000/docs
 
 ---
 
+## 9. MLOps — Monitoring, Experiment Tracking & CI/CD
+
+The project includes a full local MLOps stack. All services run via Docker Compose alongside the core app.
+
+### Prerequisites
+
+| Tool | Install |
+|------|---------|
+| Docker Desktop | [docker.com](https://www.docker.com/products/docker-desktop/) |
+
+---
+
+### Start the Full Stack
+
+```bash
+docker compose up -d
+```
+
+This starts: Qdrant · Ollama · Backend API · Prometheus · Grafana · MLflow.
+
+---
+
+### Open the Dashboards
+
+| Service | URL | Credentials |
+|---------|-----|-------------|
+| Backend API | http://localhost:8000 | — |
+| Backend Metrics | http://localhost:8000/metrics | — |
+| Prometheus | http://localhost:9090 | — |
+| Grafana | http://localhost:3001 | admin / admin |
+| MLflow | http://localhost:5000 | — |
+
+The Grafana dashboard **CTI Bot — MLOps Monitoring** is provisioned automatically on first boot. It shows:
+- HTTP request rate and latency p95
+- RAG pipeline duration and LLM generation duration
+- Advisory freshness (hours since last ingest) with colour-coded alert thresholds
+- Hallucination score trend
+- Chunks retrieved per query
+- Ingestion duration and chunk counts
+
+---
+
+### Run the Local CI/CD Pipeline Manually
+
+```bash
+./mlops/ci_local.sh
+```
+
+This runs three steps in sequence:
+1. Re-ingests the latest advisories into Qdrant
+2. Checks advisory freshness and reports if the knowledge base is stale
+3. Runs a smoke test verifying retrieval across all three sources
+
+**Schedule it with cron (every 6 hours):**
+```bash
+crontab -e
+# Add this line:
+0 */6 * * * /full/path/to/mlops/ci_local.sh >> ~/cti_ci.log 2>&1
+```
+
+---
+
+### Advisory Freshness Check
+
+After every ingestion, a timestamp is written to `mlops/last_ingested.json`. Run the freshness check standalone at any time:
+
+```bash
+python mlops/freshness_check.py          # print report
+python mlops/freshness_check.py --alert  # exit code 1 if stale (> 24 h)
+```
+
+The Grafana freshness gauge turns **yellow at 12 h** and **red at 24 h** stale.
+
+---
+
+### Hallucination Scoring
+
+Disabled by default to avoid extra latency. Enable it to have each RAG answer scored for faithfulness against its retrieved context (0.0 = hallucinated, 1.0 = fully grounded):
+
+```bash
+# When running the backend locally:
+HALLUCINATION_SCORING=true python -m uvicorn backend.main:app --reload --port 8000
+
+# When running via Docker Compose, add to the backend environment in docker-compose.yml:
+#   HALLUCINATION_SCORING: "true"
+```
+
+Scores are recorded in Prometheus (`cti_hallucination_score`) and visible in the Grafana dashboard.
+
+---
+
+### MLflow Experiment Tracking
+
+Every ingestion run and RAG query is logged to MLflow automatically.
+
+Open http://localhost:5000 to see:
+- **cti-ingestion** experiment — parameters (model, batch size), metrics (total chunks, duration), one run per ingestion
+- **cti-rag-queries** experiment — parameters (model, top_k, source filter), metrics (latency, chunks retrieved, hallucination score), one run per query
+
+---
+
 ## Architecture Overview
 
 ```
@@ -170,12 +271,18 @@ Frontend — React + Vite
     │  HTTP POST
     ▼
 Backend — FastAPI (localhost:8000)
-    │
-    ├── Retriever → Qdrant (local file: ./qdrant_data)
+    │  exposes /metrics
+    ├── Retriever → Qdrant (localhost:6333)
     │               Embedding model: BAAI/bge-small-en-v1.5
     │
     └── Generator → Ollama (localhost:11434)
                     LLM: qwen2.5:3b
+
+MLOps Layer
+    ├── Prometheus (localhost:9090) — scrapes /metrics every 15 s
+    ├── Grafana    (localhost:3001) — dashboards over Prometheus data
+    ├── MLflow     (localhost:5000) — ingestion + RAG experiment tracking
+    └── ci_local.sh                — local CI/CD: ingest → freshness → smoke test
 ```
 
 ---

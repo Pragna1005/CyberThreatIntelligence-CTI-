@@ -16,6 +16,72 @@ services:
     volumes:
       - ollama_data:/root/.ollama
 
+  backend:
+    build: .
+    container_name: cti-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_API_KEY=
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen:7b}
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - HALLUCINATION_SCORING=${HALLUCINATION_SCORING:-false}
+    depends_on:
+      - qdrant
+      - ollama
+      - mlflow
+    volumes:
+      - ./chunks:/app/chunks
+      - ./mlops:/app/mlops
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: cti-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+    depends_on:
+      - backend
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: cti-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.16.2
+    container_name: cti-mlflow
+    ports:
+      - "5000:5000"
+    command: >
+      mlflow server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri /mlflow/mlruns
+      --default-artifact-root /mlflow/artifacts
+    volumes:
+      - mlflow_data:/mlflow
+
 volumes:
   qdrant_data:
   ollama_data:
+  grafana_data:
+  mlflow_data:
