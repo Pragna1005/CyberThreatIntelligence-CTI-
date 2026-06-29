@@ -12,7 +12,7 @@ from typing import Optional
 
 from dotenv import load_dotenv, find_dotenv
 from qdrant_client import QdrantClient
-from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchAny
+from qdrant_client.models import Distance, Filter, FieldCondition, MatchValue, MatchAny, VectorParams
 from sentence_transformers import SentenceTransformer
 
 load_dotenv(find_dotenv(usecwd=True))
@@ -21,6 +21,7 @@ COLLECTION_NAME = "cti_intel"
 EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 DEFAULT_TOP_K = 5
+VECTOR_DIM = 384  # BAAI/bge-small-en-v1.5 output dimension
 
 _model: Optional[SentenceTransformer] = None
 _client: Optional[QdrantClient] = None
@@ -46,7 +47,18 @@ def _get_client() -> QdrantClient:
         else:
             local_path = os.environ.get("QDRANT_LOCAL_PATH", "./qdrant_data")
             _client = QdrantClient(path=local_path)
+        _ensure_collection(_client)
     return _client
+
+
+def _ensure_collection(client: QdrantClient) -> None:
+    """Create the Qdrant collection if it does not already exist."""
+    existing = {c.name for c in client.get_collections().collections}
+    if COLLECTION_NAME not in existing:
+        client.create_collection(
+            collection_name=COLLECTION_NAME,
+            vectors_config=VectorParams(size=VECTOR_DIM, distance=Distance.COSINE),
+        )
 
 
 @dataclass

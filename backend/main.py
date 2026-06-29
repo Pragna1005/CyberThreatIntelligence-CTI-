@@ -23,7 +23,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import make_asgi_app
-from qdrant_client.http.exceptions import ResponseHandlingException
+from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 
 from backend.routers import mitre, cert, threats, chat, upload
 from backend.metrics import (
@@ -96,6 +96,24 @@ def qdrant_unavailable_handler(_: Request, exc: ResponseHandlingException):
                 "to a running instance."
             )
         },
+    )
+
+
+@app.exception_handler(UnexpectedResponse)
+def qdrant_unexpected_handler(_: Request, exc: UnexpectedResponse):
+    if exc.status_code == 404:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": (
+                    "The vector store collection is not ready. "
+                    "Upload a document or run the ingestion pipeline first."
+                )
+            },
+        )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Qdrant error: {exc.content}"},
     )
 
 

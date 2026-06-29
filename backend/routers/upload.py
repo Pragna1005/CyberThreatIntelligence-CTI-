@@ -23,6 +23,8 @@ from qdrant_client.models import Filter, FieldCondition, MatchValue, PointStruct
 
 from rag.retriever import _get_client, _get_model, COLLECTION_NAME
 
+VECTOR_DIM = 384  # BAAI/bge-small-en-v1.5 output dimension
+
 router = APIRouter(prefix="/api", tags=["Upload"])
 
 # In-memory registry: upload_id -> {upload_id, filename, chunk_count}
@@ -131,7 +133,7 @@ async def upload_file(file: UploadFile = File(...)):
 
     upload_id = str(uuid.uuid4())
     model  = _get_model()
-    client = _get_client()
+    client = _get_client()  # _get_client() ensures collection exists on first call
 
     # Run in a thread so the async event loop isn't blocked during CPU-bound encoding
     loop = asyncio.get_event_loop()
