@@ -250,7 +250,16 @@ export default function ChatPage() {
     setLoading(true);
     try {
       const activeUploadIds = uploads.map((u) => u.uploadId);
-      const data = await api.chat(query, 5, activeUploadIds);
+
+      // Send the last 6 messages (3 user+assistant pairs) as conversation history
+      // so the model can handle follow-up questions and references to earlier answers.
+      const currentMessages = conversations.find((c) => c.id === convId)?.messages || [];
+      const history = currentMessages.slice(-6).map((m) => ({
+        role: m.role,
+        content: m.role === "user" ? m.text : m.answer,
+      }));
+
+      const data = await api.chat(query, 5, activeUploadIds, history);
       updateConversation(convId, (c) => ({
         ...c,
         messages: [

@@ -1,11 +1,11 @@
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 
-async function query(endpoint, question, topK = 5, uploadIds = []) {
+async function query(endpoint, question, topK = 5, uploadIds = [], history = []) {
   try {
     const res = await fetch(`${BASE_URL}${endpoint}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: question, top_k: topK, upload_ids: uploadIds }),
+      body: JSON.stringify({ query: question, top_k: topK, upload_ids: uploadIds, history }),
     });
     if (!res.ok) {
       let message = `API error: ${res.status}`;
@@ -72,7 +72,7 @@ export const api = {
   mitre:        (q, k) => query("/api/mitre_query",  q, k),
   cert:         (q, k) => query("/api/cert_query",   q, k),
   threat:       (q, k) => query("/api/threat_query", q, k),
-  chat:         (q, k, uploadIds) => query("/api/chat", q, k, uploadIds),
+  chat:         (q, k, uploadIds, history) => query("/api/chat", q, k, uploadIds, history),
   uploadFile,
   deleteUpload,
 };

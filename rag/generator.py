@@ -31,37 +31,102 @@ You answer questions about cybersecurity threats, attack techniques, malware, \
 vulnerabilities, and indicators of compromise (IOCs).
 
 Rules:
-1. Answer using ONLY the provided context. Do not use outside knowledge.
+1. Ground your answers in the provided CONTEXT records. For follow-up questions that refer to \
+something you said earlier (e.g. "explain the first point", "what did you mean by that?"), \
+you may also draw on the CONVERSATION HISTORY shown below — but always prefer the retrieved \
+context for facts.
 2. The context contains structured intelligence records. Use ALL of them to build your answer.
 3. For IOC records: list the IOC value, type, malware family, confidence, and reference URL.
 4. For CVE/vulnerability records: summarize the CVE ID, affected product, severity, and advisory URL.
 5. For MITRE technique records: explain the technique and how it is used.
 6. Always cite the chunk ID when referencing a record.
-7. Only say "I don't have enough information" if the context contains zero records.
-8. End with a "Sources:" section listing the chunk IDs used.
+7. Only say "I don't have enough information" if the context contains zero records AND there is \
+nothing relevant in the conversation history either.
+8. End with a "Sources:" section listing the chunk IDs used (omit if answering purely from history).
 9. If the user asks you to explain, summarize, describe, or tell them about an uploaded document \
 or PDF, use ALL the provided context chunks to write a comprehensive explanation — never say you \
 lack information when context records are present.
 10. If the context includes web page content (Source: WebFetch), read that content carefully and \
 use it to answer whatever the user is asking about that URL — summarize, extract facts, or answer \
-specific questions as needed."""
+specific questions as needed.
+11. Be conversational and helpful. If the user asks a clarifying or follow-up question, engage \
+naturally — you don't need to repeat retrieved context they already saw unless it helps."""
 
 # Patterns that indicate the user is asking about an uploaded document in general terms
 _DOC_META_RE = re.compile(
     r"(explain|summarize|summarise|describe|overview|tell me about|what (is|does|are)|"
-    r"what('s| is) in|give me|show me|read).{0,30}"
+    r"what('s| is) in|give me|show me|read).{0,40}"
     r"(the\s+)?(pdf|document|doc|file|uploaded|attachment|content)",
     re.IGNORECASE,
 )
 _DOC_REF_RE = re.compile(
-    r"\b(this|the|attached|uploaded)\s+(pdf|document|doc|file)\b",
+    r"\b(this|the|attached|uploaded)\s+(pdf|document|doc|file)\b"
+    r"|\bwhat\s+(is|does|are|did)\s+(this|it)\b"
+    r"|\b(it|this)\s+(says?|talks?\s+about|mentions?|covers?|discusses?|is\s+about)\b",
+    re.IGNORECASE,
+)
+# Short standalone meta-commands — "explain", "summarize", "what's this?", etc.
+_SHORT_META_RE = re.compile(
+    r"^\s*(explain(\s+it)?|summarize|summarise|describe(\s+it)?|"
+    r"what'?s?\s+(this|it)(\s+about)?|what\s+does\s+it\s+(say|cover|talk|discuss)|"
+    r"give\s+(me\s+)?(a\s+)?(summary|overview|explanation)|"
+    r"tell\s+me\s+(about\s+)?(it|this)|overview)\s*[?.!]?\s*$",
     re.IGNORECASE,
 )
 
 
 def _is_document_meta_query(query: str) -> bool:
     """Return True when the user is asking about the uploaded document in general terms."""
-    return bool(_DOC_META_RE.search(query) or _DOC_REF_RE.search(query))
+    return bool(
+        _DOC_META_RE.search(query)
+        or _DOC_REF_RE.search(query)
+        or _SHORT_META_RE.match(query)
+    )
+
+
+# ── Simple document-explanation prompt (used instead of the full SYSTEM_PROMPT) ──
+# qwen2.5:3b can't reliably follow 11 rules; a single direct instruction works better.
+
+DOCUMENT_SYSTEM_PROMPT = (
+    "You are a helpful document reader and summarizer.\n"
+    "The user has shared a document. Read all the chunks below and write a clear, "
+    "thorough explanation.\n"
+    "- Write at least 3 paragraphs.\n"
+    "- Cover: what the document is about, the main topics it discusses, and key takeaways.\n"
+    "- Use EVERY chunk provided — do not skip any.\n"
+    "- End with 'Sources:' listing the chunk IDs you used.\n"
+    "- NEVER say 'I don't have enough information' when content is given — just use it."
+)
+
+# Detect when the model refuses despite having context
+_REFUSAL_RE = re.compile(
+    r"i\s+(don'?t|do\s+not)\s+have\s+(enough\s+)?information"
+    r"|not\s+enough\s+information"
+    r"|cannot\s+answer\s+(this|the\s+question)"
+    r"|unable\s+to\s+(answer|provide)",
+    re.IGNORECASE,
+)
+
+
+def _is_refusal(text: str) -> bool:
+    return bool(_REFUSAL_RE.search(text))
+
+
+def _fallback_from_chunks(chunks: list[RetrievedChunk]) -> str:
+    """
+    Last-resort answer: stitch chunk text into a readable summary when the
+    model refuses despite having content. Prioritises upload/web chunks.
+    """
+    preferred = [c for c in chunks if c.source in ("UserUpload", "WebFetch")]
+    targets = preferred if preferred else chunks
+    parts: list[str] = []
+    for c in targets:
+        text = c.text.strip()
+        if text:
+            parts.append(text)
+    body = "\n\n".join(parts)
+    ids = ", ".join(c.chunk_id for c in targets)
+    return f"Here is the content from the document:\n\n{body}\n\nSources: {ids}"
 
 
 # ── URL fetching ──────────────────────────────────────────────────────────────
@@ -206,13 +271,28 @@ def _build_context_block(chunks: list[RetrievedChunk]) -> str:
     return "\n".join(lines)
 
 
+def _build_history_block(history: list[dict]) -> str:
+    """Format a list of {role, content} turns into a readable history section."""
+    lines = []
+    for turn in history:
+        label = "User" if turn["role"] == "user" else "Assistant"
+        lines.append(f"{label}: {turn['content']}")
+    return "\n".join(lines)
+
+
 def _build_user_prompt(
     query: str,
     chunks: list[RetrievedChunk],
+    history: list[dict] | None = None,
     has_uploads: bool = False,
     has_web: bool = False,
 ) -> str:
     context = _build_context_block(chunks)
+
+    history_section = ""
+    if history:
+        history_section = f"\nCONVERSATION HISTORY:\n{_build_history_block(history)}\n"
+
     notes: list[str] = []
     if has_web:
         notes.append(
@@ -225,12 +305,12 @@ def _build_user_prompt(
             "If the user is asking for an explanation or summary, use all chunks to provide one."
         )
     extra = ("\nNote: " + " ".join(notes)) if notes else ""
+
     return f"""CONTEXT:
-{context}
+{context}{history_section}
+CURRENT QUESTION: {query}{extra}
 
-QUESTION: {query}{extra}
-
-Answer based strictly on the context above. Cite sources by their chunk ID."""
+Answer based on the context and conversation history above. Cite sources by their chunk ID."""
 
 
 @dataclass
@@ -246,14 +326,14 @@ def generate(
     top_k: int = 5,
     source_filter: str | None = None,
     upload_ids: list[str] | None = None,
+    history: list[dict] | None = None,
 ) -> RAGResponse:
     """
     Full RAG pipeline: retrieve → augment → generate.
 
-    When upload_ids are provided, chunks from those specific documents are
-    fetched separately and merged into the context so the LLM always sees
-    the uploaded content — even when the query phrasing ("explain the pdf")
-    has low semantic similarity to the document text.
+    history is a list of {role, content} dicts representing recent conversation
+    turns. It is injected into the prompt so the LLM can answer follow-up
+    questions that reference previous answers.
     """
     # Fetch any URLs the user pasted into the query
     web_chunks = _fetch_query_urls(query)
@@ -289,7 +369,24 @@ def generate(
             model=LLM_MODEL,
         )
 
-    prompt = f"{SYSTEM_PROMPT}\n\n{_build_user_prompt(query, chunks, has_uploads=bool(upload_ids), has_web=bool(web_chunks))}"
+    # Use a simple, direct prompt when explaining/summarising an uploaded document.
+    # The full 11-rule SYSTEM_PROMPT overloads small models (qwen2.5:3b) and causes
+    # them to refuse despite having valid context.
+    is_doc_explain = _is_document_meta_query(query) and bool(upload_chunks)
+    if is_doc_explain:
+        doc_text = "\n\n".join(
+            f"[Chunk {i + 1} — ID: {c.chunk_id}]:\n{c.text}"
+            for i, c in enumerate(upload_chunks)
+        )
+        prompt = (
+            f"{DOCUMENT_SYSTEM_PROMPT}\n\n"
+            f"DOCUMENT CHUNKS:\n{doc_text}\n\n"
+            f"USER REQUEST: {query}\n\n"
+            f"Write your explanation now:"
+        )
+    else:
+        prompt = f"{SYSTEM_PROMPT}\n\n{_build_user_prompt(query, chunks, history=history or [], has_uploads=bool(upload_ids), has_web=bool(web_chunks))}"
+
     response = requests.post(
         f"{OLLAMA_BASE_URL}/api/generate",
         json={
@@ -309,6 +406,11 @@ def generate(
             response=response,
         )
     answer = response.json().get("response", "").strip()
+
+    # Fallback: if the model still refuses despite having chunks, build the answer
+    # directly from the chunk text so the user always gets something useful.
+    if _is_refusal(answer) and chunks:
+        answer = _fallback_from_chunks(chunks)
 
     sources = [
         {
