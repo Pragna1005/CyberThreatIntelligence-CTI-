@@ -158,6 +158,34 @@ def retrieve_from_uploads(
     return results
 
 
+def retrieve_by_cve_id(cve_id: str) -> list[RetrievedChunk]:
+    """
+    Return all chunks whose `cve_id` payload field exactly matches *cve_id*.
+    Used to look up a specific CVE directly rather than relying on semantic search,
+    which would return similar-but-wrong CVEs when the user provides an MSRC URL.
+    """
+    client = _get_client()
+    records, _ = client.scroll(
+        collection_name=COLLECTION_NAME,
+        scroll_filter=Filter(
+            must=[FieldCondition(key="cve_id", match=MatchValue(value=cve_id.upper()))]
+        ),
+        limit=10,
+        with_payload=True,
+    )
+    results = []
+    for point in records:
+        p = point.payload
+        results.append(RetrievedChunk(
+            chunk_id=p.get("chunk_id", ""),
+            source=p.get("source", ""),
+            text=p.get("text", ""),
+            score=1.0,
+            metadata={k: v for k, v in p.items() if k not in ("chunk_id", "source", "text")},
+        ))
+    return results
+
+
 if __name__ == "__main__":
     tests = [
         ("What ATT&CK techniques are used in phishing attacks?", None),

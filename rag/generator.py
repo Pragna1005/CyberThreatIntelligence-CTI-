@@ -17,7 +17,7 @@ from html.parser import HTMLParser
 import requests
 from dotenv import load_dotenv, find_dotenv
 
-from rag.retriever import RetrievedChunk, retrieve, retrieve_from_uploads
+from rag.retriever import RetrievedChunk, retrieve, retrieve_from_uploads, retrieve_by_cve_id
 
 load_dotenv(find_dotenv(usecwd=True))
 
@@ -114,10 +114,12 @@ def _is_refusal(text: str) -> bool:
 
 def _fallback_from_chunks(chunks: list[RetrievedChunk]) -> str:
     """
-    Last-resort answer: stitch chunk text into a readable summary when the
-    model refuses despite having content. Prioritises upload/web chunks.
+    Last-resort answer: stitch chunk text into a readable answer when the
+    model refuses despite having content. Prioritises exact CVE / upload / web
+    chunks over generic KB results.
     """
-    preferred = [c for c in chunks if c.source in ("UserUpload", "WebFetch")]
+    # Prefer exact/uploaded/web content over generic KB chunks
+    preferred = [c for c in chunks if c.source in ("UserUpload", "WebFetch") or c.score == 1.0]
     targets = preferred if preferred else chunks
     parts: list[str] = []
     for c in targets:
@@ -126,13 +128,23 @@ def _fallback_from_chunks(chunks: list[RetrievedChunk]) -> str:
             parts.append(text)
     body = "\n\n".join(parts)
     ids = ", ".join(c.chunk_id for c in targets)
-    return f"Here is the content from the document:\n\n{body}\n\nSources: {ids}"
+    source_label = "retrieved knowledge base" if not preferred else "matched records"
+    return f"Here is what was found in the {source_label}:\n\n{body}\n\nSources: {ids}"
 
 
 # ── URL fetching ──────────────────────────────────────────────────────────────
 
 _URL_RE = re.compile(r'https?://[^\s<>"\')\]]+', re.IGNORECASE)
 _WEB_MAX_CHARS = 5000  # characters of page text to include per URL
+_SPA_THRESHOLD = 200   # pages with fewer extracted chars are treated as JS SPAs
+
+# MSRC vulnerability URL pattern — extract CVE ID for direct KB lookup
+_MSRC_CVE_RE = re.compile(
+    r'msrc\.microsoft\.com/update-guide/[^/\s]+/vulnerability/(CVE-[\d-]+)',
+    re.IGNORECASE,
+)
+# Generic CVE ID in any URL
+_CVE_IN_URL_RE = re.compile(r'(CVE-\d{4}-\d+)', re.IGNORECASE)
 
 
 class _HTMLStripper(HTMLParser):
@@ -165,9 +177,11 @@ class _HTMLStripper(HTMLParser):
 
 def _fetch_url_text(url: str) -> str | None:
     """
-    Fetch *url* and return cleaned plain text, or None if fetching fails.
-    HTML is stripped; non-HTML responses (JSON, plain text) are returned as-is.
-    Content is capped at _WEB_MAX_CHARS characters.
+    Fetch *url* and return cleaned plain text, or None if fetching fails hard.
+
+    JavaScript-rendered SPAs (e.g. MSRC update guide) return almost no text after
+    HTML stripping. When that happens we return an informative message so the LLM
+    knows the page couldn't be read and can tell the user what to do instead.
     """
     try:
         req = urllib.request.Request(
@@ -185,17 +199,32 @@ def _fetch_url_text(url: str) -> str | None:
         else:
             text = raw
 
-        text = re.sub(r"\s{3,}", "  ", text)  # collapse excessive whitespace
-        return text[:_WEB_MAX_CHARS].strip() or None
-    except Exception:
-        return None
+        text = re.sub(r"\s{3,}", "  ", text).strip()
+        text = text[:_WEB_MAX_CHARS]
+
+        # Sparse text means a JavaScript SPA — return a descriptive message instead of None
+        if len(text) < _SPA_THRESHOLD:
+            cve_match = _CVE_IN_URL_RE.search(url)
+            cve_hint = (
+                f" The URL contains CVE ID: {cve_match.group(1).upper()}."
+                " The knowledge base has been searched for this specific CVE."
+                if cve_match else ""
+            )
+            return (
+                f"[Note: The page at {url} is a JavaScript-rendered application that "
+                f"cannot be read by a plain HTTP request.{cve_hint}]"
+            )
+
+        return text or None
+    except Exception as exc:
+        return f"[Note: Could not fetch {url} — {type(exc).__name__}]"
 
 
 def _fetch_query_urls(query: str) -> list[RetrievedChunk]:
     """
     Find all http/https URLs in *query*, fetch their content, and return
     each as a synthetic RetrievedChunk with source='WebFetch'.
-    Failures are silently skipped.
+    SPA/fetch-failure messages are included so the LLM can inform the user.
     """
     urls = _URL_RE.findall(query)
     chunks: list[RetrievedChunk] = []
@@ -210,6 +239,23 @@ def _fetch_query_urls(query: str) -> list[RetrievedChunk]:
                 metadata={"url": url},
             ))
     return chunks
+
+
+def _cve_ids_from_urls(query: str) -> list[str]:
+    """
+    Extract CVE IDs embedded in MSRC or other vulnerability-tracker URLs.
+    Returns upper-cased CVE IDs like ['CVE-2026-45648'].
+    """
+    ids: list[str] = []
+    for m in _MSRC_CVE_RE.finditer(query):
+        ids.append(m.group(1).upper())
+    # Also catch bare CVE IDs that appear directly in any URL in the query
+    for url in _URL_RE.findall(query):
+        for m in _CVE_IN_URL_RE.finditer(url):
+            cve = m.group(1).upper()
+            if cve not in ids:
+                ids.append(cve)
+    return ids
 
 
 def _extract_url(chunk: RetrievedChunk) -> str:
@@ -338,6 +384,13 @@ def generate(
     # Fetch any URLs the user pasted into the query
     web_chunks = _fetch_query_urls(query)
 
+    # For MSRC/vulnerability URLs: extract CVE IDs and do a direct KB lookup.
+    # Semantic search would return similar-but-wrong CVEs; exact field match finds
+    # the right one even when the live page can't be fetched (JS SPA).
+    cve_chunks: list[RetrievedChunk] = []
+    for cve_id in _cve_ids_from_urls(query):
+        cve_chunks.extend(retrieve_by_cve_id(cve_id))
+
     # Retrieve from the general knowledge base
     kb_chunks = retrieve(query, top_k=top_k, source_filter=source_filter)
 
@@ -353,10 +406,12 @@ def generate(
             retrieval_query = query
         upload_chunks = retrieve_from_uploads(retrieval_query, upload_ids, top_k_per_upload=6)
 
-    # Merge order: web → upload → kb so the most directly-referenced content appears first
+    # Merge order: web → exact CVE → upload → semantic KB
+    # Exact CVE matches are prioritised over semantic KB results so the right
+    # CVE is always prominent even when the live page couldn't be fetched.
     seen_ids: set[str] = set()
     chunks: list[RetrievedChunk] = []
-    for c in web_chunks + upload_chunks + kb_chunks:
+    for c in web_chunks + cve_chunks + upload_chunks + kb_chunks:
         if c.chunk_id not in seen_ids:
             seen_ids.add(c.chunk_id)
             chunks.append(c)
