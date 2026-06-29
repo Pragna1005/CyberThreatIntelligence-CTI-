@@ -9,7 +9,10 @@ The prompt strictly instructs the model to:
 """
 
 import os
+import re
+import urllib.request
 from dataclasses import dataclass
+from html.parser import HTMLParser
 
 import requests
 from dotenv import load_dotenv, find_dotenv
@@ -35,7 +38,113 @@ Rules:
 5. For MITRE technique records: explain the technique and how it is used.
 6. Always cite the chunk ID when referencing a record.
 7. Only say "I don't have enough information" if the context contains zero records.
-8. End with a "Sources:" section listing the chunk IDs used."""
+8. End with a "Sources:" section listing the chunk IDs used.
+9. If the user asks you to explain, summarize, describe, or tell them about an uploaded document \
+or PDF, use ALL the provided context chunks to write a comprehensive explanation — never say you \
+lack information when context records are present.
+10. If the context includes web page content (Source: WebFetch), read that content carefully and \
+use it to answer whatever the user is asking about that URL — summarize, extract facts, or answer \
+specific questions as needed."""
+
+# Patterns that indicate the user is asking about an uploaded document in general terms
+_DOC_META_RE = re.compile(
+    r"(explain|summarize|summarise|describe|overview|tell me about|what (is|does|are)|"
+    r"what('s| is) in|give me|show me|read).{0,30}"
+    r"(the\s+)?(pdf|document|doc|file|uploaded|attachment|content)",
+    re.IGNORECASE,
+)
+_DOC_REF_RE = re.compile(
+    r"\b(this|the|attached|uploaded)\s+(pdf|document|doc|file)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_document_meta_query(query: str) -> bool:
+    """Return True when the user is asking about the uploaded document in general terms."""
+    return bool(_DOC_META_RE.search(query) or _DOC_REF_RE.search(query))
+
+
+# ── URL fetching ──────────────────────────────────────────────────────────────
+
+_URL_RE = re.compile(r'https?://[^\s<>"\')\]]+', re.IGNORECASE)
+_WEB_MAX_CHARS = 5000  # characters of page text to include per URL
+
+
+class _HTMLStripper(HTMLParser):
+    """Minimal HTML-to-text converter that skips script/style tags."""
+
+    _SKIP = {"script", "style", "head", "noscript", "nav", "footer"}
+
+    def __init__(self):
+        super().__init__()
+        self._parts: list[str] = []
+        self._depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() in self._SKIP:
+            self._depth += 1
+
+    def handle_endtag(self, tag):
+        if tag.lower() in self._SKIP:
+            self._depth = max(0, self._depth - 1)
+
+    def handle_data(self, data):
+        if not self._depth:
+            t = data.strip()
+            if t:
+                self._parts.append(t)
+
+    def text(self) -> str:
+        return " ".join(self._parts)
+
+
+def _fetch_url_text(url: str) -> str | None:
+    """
+    Fetch *url* and return cleaned plain text, or None if fetching fails.
+    HTML is stripped; non-HTML responses (JSON, plain text) are returned as-is.
+    Content is capped at _WEB_MAX_CHARS characters.
+    """
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "CTIBot/1.0 (cyber threat intelligence assistant)"},
+        )
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            content_type = resp.headers.get("Content-Type", "")
+            raw = resp.read(_WEB_MAX_CHARS * 6).decode("utf-8", errors="ignore")
+
+        if "html" in content_type.lower():
+            stripper = _HTMLStripper()
+            stripper.feed(raw)
+            text = stripper.text()
+        else:
+            text = raw
+
+        text = re.sub(r"\s{3,}", "  ", text)  # collapse excessive whitespace
+        return text[:_WEB_MAX_CHARS].strip() or None
+    except Exception:
+        return None
+
+
+def _fetch_query_urls(query: str) -> list[RetrievedChunk]:
+    """
+    Find all http/https URLs in *query*, fetch their content, and return
+    each as a synthetic RetrievedChunk with source='WebFetch'.
+    Failures are silently skipped.
+    """
+    urls = _URL_RE.findall(query)
+    chunks: list[RetrievedChunk] = []
+    for url in urls:
+        text = _fetch_url_text(url)
+        if text:
+            chunks.append(RetrievedChunk(
+                chunk_id=f"web:{url[:100]}",
+                source="WebFetch",
+                text=f"[Fetched from {url}]\n\n{text}",
+                score=1.0,
+                metadata={"url": url},
+            ))
+    return chunks
 
 
 def _extract_url(chunk: RetrievedChunk) -> str:
@@ -97,12 +206,29 @@ def _build_context_block(chunks: list[RetrievedChunk]) -> str:
     return "\n".join(lines)
 
 
-def _build_user_prompt(query: str, chunks: list[RetrievedChunk]) -> str:
+def _build_user_prompt(
+    query: str,
+    chunks: list[RetrievedChunk],
+    has_uploads: bool = False,
+    has_web: bool = False,
+) -> str:
     context = _build_context_block(chunks)
+    notes: list[str] = []
+    if has_web:
+        notes.append(
+            "Web page content has been fetched and included above (Source: WebFetch). "
+            "Use it to answer the user's question about that URL."
+        )
+    if has_uploads:
+        notes.append(
+            "The context also contains chunks from the user's uploaded document(s). "
+            "If the user is asking for an explanation or summary, use all chunks to provide one."
+        )
+    extra = ("\nNote: " + " ".join(notes)) if notes else ""
     return f"""CONTEXT:
 {context}
 
-QUESTION: {query}
+QUESTION: {query}{extra}
 
 Answer based strictly on the context above. Cite sources by their chunk ID."""
 
@@ -129,18 +255,28 @@ def generate(
     the uploaded content — even when the query phrasing ("explain the pdf")
     has low semantic similarity to the document text.
     """
+    # Fetch any URLs the user pasted into the query
+    web_chunks = _fetch_query_urls(query)
+
     # Retrieve from the general knowledge base
     kb_chunks = retrieve(query, top_k=top_k, source_filter=source_filter)
 
-    # Retrieve from the user's uploaded documents (bypasses semantic mismatch)
+    # Retrieve from the user's uploaded documents.
+    # When the user asks a meta-question ("explain the pdf", "summarize this document") the
+    # query has low semantic similarity to the actual document text, so we substitute a
+    # neutral content-retrieval query that matches document body text much better.
     upload_chunks: list[RetrievedChunk] = []
     if upload_ids:
-        upload_chunks = retrieve_from_uploads(query, upload_ids, top_k_per_upload=3)
+        if _is_document_meta_query(query):
+            retrieval_query = "main content introduction summary key points overview"
+        else:
+            retrieval_query = query
+        upload_chunks = retrieve_from_uploads(retrieval_query, upload_ids, top_k_per_upload=6)
 
-    # Merge: upload chunks go first so the LLM sees them prominently
+    # Merge order: web → upload → kb so the most directly-referenced content appears first
     seen_ids: set[str] = set()
     chunks: list[RetrievedChunk] = []
-    for c in upload_chunks + kb_chunks:
+    for c in web_chunks + upload_chunks + kb_chunks:
         if c.chunk_id not in seen_ids:
             seen_ids.add(c.chunk_id)
             chunks.append(c)
@@ -153,7 +289,7 @@ def generate(
             model=LLM_MODEL,
         )
 
-    prompt = f"{SYSTEM_PROMPT}\n\n{_build_user_prompt(query, chunks)}"
+    prompt = f"{SYSTEM_PROMPT}\n\n{_build_user_prompt(query, chunks, has_uploads=bool(upload_ids), has_web=bool(web_chunks))}"
     response = requests.post(
         f"{OLLAMA_BASE_URL}/api/generate",
         json={

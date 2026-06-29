@@ -95,7 +95,7 @@ function AssistantBubble({ answer, sources, model, loading }) {
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 
-function Sidebar({ conversations, activeId, onSelect, onNew, onDelete, uploads, onDeleteUpload }) {
+function Sidebar({ conversations, activeId, onSelect, onNew, onDelete, uploads, pendingUploads, onDeleteUpload }) {
   return (
     <aside className="w-64 flex-shrink-0 bg-gray-900 border-r border-gray-700 flex flex-col h-full">
       {/* New chat button */}
@@ -138,10 +138,19 @@ function Sidebar({ conversations, activeId, onSelect, onNew, onDelete, uploads, 
       </div>
 
       {/* Uploaded documents section */}
-      {uploads.length > 0 && (
+      {(uploads.length > 0 || pendingUploads.length > 0) && (
         <div className="border-t border-gray-700 p-3">
           <p className="text-xs font-semibold text-gray-500 mb-2 uppercase tracking-wide">Uploaded Docs</p>
           <div className="space-y-1">
+            {/* Pending (loading) uploads */}
+            {pendingUploads.map((p) => (
+              <div key={p.tempId} className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-gray-800">
+                <span className="text-blue-400 text-xs flex-shrink-0 animate-spin inline-block">⟳</span>
+                <span className="flex-1 truncate text-xs text-gray-400" title={p.filename}>{p.filename}</span>
+                <span className="text-xs text-blue-600 flex-shrink-0">loading…</span>
+              </div>
+            ))}
+            {/* Completed uploads */}
             {uploads.map((u) => (
               <div key={u.uploadId} className="group flex items-center gap-2 px-2 py-1.5 rounded-lg bg-gray-800">
                 <span className="text-green-400 text-xs flex-shrink-0">📄</span>
@@ -181,8 +190,8 @@ export default function ChatPage() {
   const [loading, setLoading] = useState(false);
   const [input, setInput] = useState("");
   const [uploads, setUploads] = useState([]); // [{ uploadId, filename, chunkCount }]
+  const [pendingUploads, setPendingUploads] = useState([]); // [{ tempId, filename }]
   const [uploadError, setUploadError] = useState(null);
-  const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef(null);
   const bottomRef = useRef(null);
 
@@ -269,17 +278,19 @@ export default function ChatPage() {
     if (!file) return;
 
     setUploadError(null);
-    setUploading(true);
+    const tempId = String(Date.now());
+    // Show the document immediately with a loading indicator
+    setPendingUploads((prev) => [...prev, { tempId, filename: file.name }]);
     try {
       const data = await api.uploadFile(file);
+      setPendingUploads((prev) => prev.filter((p) => p.tempId !== tempId));
       setUploads((prev) => [
         ...prev,
         { uploadId: data.upload_id, filename: data.filename, chunkCount: data.chunk_count },
       ]);
     } catch (err) {
+      setPendingUploads((prev) => prev.filter((p) => p.tempId !== tempId));
       setUploadError(err.message);
-    } finally {
-      setUploading(false);
     }
   }
 
@@ -329,6 +340,7 @@ export default function ChatPage() {
         onNew={handleNewChat}
         onDelete={handleDeleteConversation}
         uploads={uploads}
+        pendingUploads={pendingUploads}
         onDeleteUpload={handleDeleteUpload}
       />
 
@@ -379,8 +391,20 @@ export default function ChatPage() {
           />
 
           {/* Uploaded file badges */}
-          {uploads.length > 0 && (
+          {(uploads.length > 0 || pendingUploads.length > 0) && (
             <div className="flex flex-wrap gap-2 mb-2">
+              {/* Loading badges */}
+              {pendingUploads.map((p) => (
+                <span
+                  key={p.tempId}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-blue-900/40 border border-blue-700/50 text-blue-300 text-xs rounded-full"
+                >
+                  <span className="animate-spin inline-block">⟳</span>
+                  <span className="max-w-[160px] truncate">{p.filename}</span>
+                  <span className="text-blue-500">loading…</span>
+                </span>
+              ))}
+              {/* Ready badges */}
               {uploads.map((u) => (
                 <span
                   key={u.uploadId}
@@ -413,15 +437,10 @@ export default function ChatPage() {
             {/* Attach button */}
             <button
               onClick={() => fileInputRef.current?.click()}
-              disabled={uploading}
               title="Upload PDF, TXT, or DOCX to add to knowledge base"
-              className="flex-shrink-0 text-gray-400 hover:text-blue-400 disabled:text-gray-600 transition-colors pb-0.5 text-lg leading-none"
+              className="flex-shrink-0 w-7 h-7 flex items-center justify-center rounded-full text-gray-400 hover:text-white hover:bg-blue-600 transition-colors text-xl font-light leading-none"
             >
-              {uploading ? (
-                <span className="text-sm animate-pulse text-blue-400">⟳</span>
-              ) : (
-                "📎"
-              )}
+              +
             </button>
 
             <textarea
