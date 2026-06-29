@@ -54,7 +54,7 @@ app.mount("/metrics", metrics_app)
 
 @app.middleware("http")
 async def prometheus_middleware(request: Request, call_next):
-    if request.url.path == "/metrics":
+    if request.url.path in ("/metrics", "/metrics/"):
         return await call_next(request)
 
     start = time.perf_counter()
