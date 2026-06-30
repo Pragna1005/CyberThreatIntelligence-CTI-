@@ -382,7 +382,7 @@ def _retrieve_all(
     top_k: int,
     source_filter: str | None,
     upload_ids: list[str] | None,
-) -> tuple[list[RetrievedChunk], list[RetrievedChunk], str]:
+) -> tuple[list[RetrievedChunk], list[RetrievedChunk], bool]:
     """
     Run all retrieval steps and return (all_chunks, upload_chunks, prompt_query).
     Encodes the query embedding once and reuses it across retrieve calls.
@@ -465,6 +465,7 @@ def generate(
     history: list[dict] | None = None,
 ) -> RAGResponse:
     """Full RAG pipeline: retrieve → augment → generate (blocking)."""
+    rag_start = time.perf_counter()
     chunks, upload_chunks, has_web = _retrieve_all(query, top_k, source_filter, upload_ids)
 
     if not chunks:
@@ -477,7 +478,6 @@ def generate(
 
     prompt = _build_prompt(query, chunks, upload_chunks, has_web, upload_ids, history)
 
-    rag_start = time.perf_counter()
     llm_start = time.perf_counter()
     response = requests.post(
         f"{OLLAMA_BASE_URL}/api/generate",
@@ -534,6 +534,7 @@ def stream_generate(
       {"token": str}               — one per Ollama token
       {"done": True, "sources": list, "model": str}  — final event
     """
+    rag_start = time.perf_counter()
     chunks, upload_chunks, has_web = _retrieve_all(query, top_k, source_filter, upload_ids)
 
     if not chunks:
@@ -548,6 +549,7 @@ def stream_generate(
     prompt = _build_prompt(query, chunks, upload_chunks, has_web, upload_ids, history)
     sources = _make_sources(chunks)
 
+    llm_start = time.perf_counter()
     response = requests.post(
         f"{OLLAMA_BASE_URL}/api/generate",
         json={
@@ -566,7 +568,6 @@ def stream_generate(
             response=response,
         )
 
-    rag_start = time.perf_counter()
     full_answer = ""
     for line in response.iter_lines():
         if not line:
@@ -582,6 +583,7 @@ def stream_generate(
         if data.get("done"):
             break
 
+    LLM_LATENCY.observe(time.perf_counter() - llm_start)
     rag_duration = time.perf_counter() - rag_start
     RAG_LATENCY.labels(source_filter=source_filter or "all").observe(rag_duration)
     CHUNKS_RETRIEVED.observe(len(chunks))
